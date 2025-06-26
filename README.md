@@ -4,7 +4,7 @@
 # Flipper Zero 5GHz Deauther
 Flipper Zero 5GHz Deauther using the BW16 (RTL8720dn)
 
-I made this project for the [Summer Hackclub](https://summer.hack.club/bc1) and because I have not seen any 5Ghz deauther projects for the Flipper Zero.
+I made this project for the [Summer Hackclub](https://summer.hack.club/bc1)
 
 
 ## Features
@@ -14,7 +14,7 @@ I made this project for the [Summer Hackclub](https://summer.hack.club/bc1) and 
 - Hidden Network Selector
 - 5 Networks Max Simultaneous Deauth
 ### Web Interface
-- Made by tesa-klebeband
+- Captive Portal Support
 
 And more features coming soon...
 
@@ -68,6 +68,8 @@ https://github.com/jamisonderek/flipper-zero-tutorials/tree/main/ui/skeleton_app
 
 https://github.com/jamisonderek/flipper-zero-tutorials/tree/main/gpio/uart_demo
 
+For the DNS I used [gorebrau's](https://github.com/gorebrau) delfyRTL:
+https://github.com/gorebrau/delfyRTL
 
 For the serial interface I used this:
 https://forum.arduino.cc/t/serial-input-basics-updated/382007/
