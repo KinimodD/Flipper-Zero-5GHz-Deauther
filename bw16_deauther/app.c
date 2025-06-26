@@ -59,8 +59,12 @@ typedef enum {
 
 #define MAX_LABEL_LEN 64
 #define MAX_SELECTED 5
-#define MAX_GROUPED 8
 #define MAX_MAC_LEN 20
+
+#define SCAN_DURATION_MIN 1000
+#define SCAN_DURATION_MAX 20000
+#define SCAN_DURATION_STEP 1000
+#define SCAN_DURATION_DEFAULT 5000
 
 typedef struct {
     ViewDispatcher* view_dispatcher; // Switches between our views
@@ -99,6 +103,7 @@ typedef struct {
     char** select_macs; // Dynamic array for MAC addresses
     uint8_t* select_bands; // Dynamic array for band (0=2.4, 1=5)
     bool select_ready; // Set to true when <iX> is received and all <n...> are processed
+    uint32_t scan_duration_ms; // Custom scan duration in ms
 } DeautherApp;
 
 typedef struct {
@@ -108,8 +113,8 @@ typedef struct {
 typedef struct {
     char name[MAX_LABEL_LEN];
     size_t count;
-    int indexes[MAX_GROUPED];
-    char macs[MAX_GROUPED][20];
+    int* indexes; // dynamically allocated
+    char** macs;  // dynamically allocated
 } NetworkGroup;
 
 // Global/static variable to hold the current group for submenu_network
@@ -158,6 +163,32 @@ static int find_group(NetworkGroup* groups, size_t group_count, const char* name
         if(strcmp(groups[i].name, name) == 0) return (int)i;
     }
     return -1;
+}
+
+// Helper: add index and mac to group, reallocating as needed
+static void add_to_group(NetworkGroup* group, int idx, const char* mac) {
+    size_t new_count = group->count + 1;
+    group->indexes = (int*)realloc(group->indexes, new_count * sizeof(int));
+    group->macs = (char**)realloc(group->macs, new_count * sizeof(char*));
+    group->indexes[group->count] = idx;
+    group->macs[group->count] = strdup(mac ? mac : "XX:XX:XX:XX:XX:XX");
+    group->count = new_count;
+}
+
+// Helper: free group memory
+static void free_group(NetworkGroup* group) {
+    if(group->macs) {
+        for(size_t i = 0; i < group->count; ++i) {
+            free(group->macs[i]);
+        }
+        free(group->macs);
+        group->macs = NULL;
+    }
+    if(group->indexes) {
+        free(group->indexes);
+        group->indexes = NULL;
+    }
+    group->count = 0;
 }
 
 /**
@@ -270,8 +301,11 @@ static void deauther_network_mac_callback(void* context, uint32_t index) {
 static void deauther_select_item_callback(void* context, uint32_t index) {
     DeautherApp* app = (DeautherApp*)context;
     if(app->select_labels && app->select_selected && index < app->select_capacity) {
+        // Use dynamic group array
         static NetworkGroup groups[32];
         static size_t group_count = 0;
+        // Free previous group allocations
+        for(size_t i = 0; i < group_count; ++i) free_group(&groups[i]);
         group_count = 0;
         // Build groups
         for(size_t i = 0; i < app->select_capacity; ++i) {
@@ -281,17 +315,11 @@ static void deauther_select_item_callback(void* context, uint32_t index) {
             if(gidx == -1) {
                 strncpy(groups[group_count].name, name, MAX_LABEL_LEN);
                 groups[group_count].count = 0;
+                groups[group_count].indexes = NULL;
+                groups[group_count].macs = NULL;
                 gidx = (int)group_count++;
             }
-            if(groups[gidx].count < MAX_GROUPED) {
-                groups[gidx].indexes[groups[gidx].count] = (int)i;
-                if(app->select_macs && app->select_macs[i]) {
-                    strncpy(groups[gidx].macs[groups[gidx].count], app->select_macs[i], MAX_MAC_LEN);
-                } else {
-                    strncpy(groups[gidx].macs[groups[gidx].count], "XX:XX:XX:XX:XX:XX", MAX_MAC_LEN);
-                }
-                groups[gidx].count++;
-            }
+            add_to_group(&groups[gidx], (int)i, app->select_macs && app->select_macs[i] ? app->select_macs[i] : NULL);
         }
         const char* sel_name = app->select_labels[index];
         int sel_group = find_group(groups, group_count, sel_name);
@@ -391,7 +419,12 @@ static void deauth_submenu_callback(void* context, uint32_t index) {
         }
         app->select_capacity = 0;
         // Send a message via UART when scan is selected
-        const char* uart_cmd = "<s>";
+        char uart_cmd[16];
+        if(app->scan_duration_ms > 0) {
+            snprintf(uart_cmd, sizeof(uart_cmd), "<s%lu>", (unsigned long)app->scan_duration_ms);
+        } else {
+            snprintf(uart_cmd, sizeof(uart_cmd), "<s>");
+        }
         size_t uart_cmd_len = strlen(uart_cmd);
         uart_helper_send(app->uart_helper, uart_cmd, uart_cmd_len);
         // Switch to the scan view
@@ -451,8 +484,12 @@ static void deauther_build_select_submenu(DeautherApp* app) {
     submenu_reset(app->submenu_select);
     app->select_index = 0;
     if(app->select_labels && app->select_macs && app->select_bands && app->select_capacity > 0) {
+        // Use dynamic group array
         static NetworkGroup groups[32];
         size_t group_count = 0;
+        // Free previous group allocations
+        for(size_t i = 0; i < group_count; ++i) free_group(&groups[i]);
+        group_count = 0;
         // Build groups
         for(size_t i = 0; i < app->select_capacity; ++i) {
             if(app->select_labels[i][0] == '\0') continue;
@@ -462,17 +499,11 @@ static void deauther_build_select_submenu(DeautherApp* app) {
             if(gidx == -1) {
                 strncpy(groups[group_count].name, name, MAX_LABEL_LEN);
                 groups[group_count].count = 0;
+                groups[group_count].indexes = NULL;
+                groups[group_count].macs = NULL;
                 gidx = (int)group_count++;
             }
-            if(groups[gidx].count < MAX_GROUPED) {
-                groups[gidx].indexes[groups[gidx].count] = (int)i;
-                if(app->select_macs && app->select_macs[i]) {
-                    strncpy(groups[gidx].macs[groups[gidx].count], app->select_macs[i], MAX_MAC_LEN);
-                } else {
-                    strncpy(groups[gidx].macs[groups[gidx].count], "XX:XX:XX:XX:XX:XX", MAX_MAC_LEN);
-                }
-                groups[gidx].count++;
-            }
+            add_to_group(&groups[gidx], (int)i, app->select_macs && app->select_macs[i] ? app->select_macs[i] : NULL);
         }
         // Add group items
         for(size_t g = 0; g < group_count; ++g) {
@@ -561,6 +592,7 @@ static void deauther_select_process_uart(FuriString* line, void* context) {
         app->select_ready = false;
         app->select_index = 0;
     } else if(str[0] == '<' && str[1] == 'n') {
+        // Parse <n...> line
         char* sep1 = strchr(str, '\x1D');
         char* end = strchr(str, '>');
         if(sep1 && end && sep1 < end) {
@@ -625,21 +657,21 @@ static void deauther_select_process_uart(FuriString* line, void* context) {
                 strncpy(app->select_macs[idx], mac, MAX_MAC_LEN);
                 app->select_macs[idx][MAX_MAC_LEN - 1] = '\0';
                 app->select_bands[idx] = band;
-                // Store MAC for grouping (not shown in select, but used in group submenu)
                 // Only add to submenu if not hidden or if show_hidden_networks is true
                 static NetworkGroup groups[32];
                 static size_t group_count = 0;
+                // Free previous group allocations
+                for(size_t i = 0; i < group_count; ++i) free_group(&groups[i]);
+                group_count = 0;
                 int gidx = find_group(groups, group_count, name);
                 if(gidx == -1) {
                     strncpy(groups[group_count].name, name, MAX_LABEL_LEN);
                     groups[group_count].count = 0;
+                    groups[group_count].indexes = NULL;
+                    groups[group_count].macs = NULL;
                     gidx = (int)group_count++;
                 }
-                if(groups[gidx].count < MAX_GROUPED) {
-                    groups[gidx].indexes[groups[gidx].count] = idx;
-                    strncpy(groups[gidx].macs[groups[gidx].count], mac, 20);
-                    groups[gidx].count++;
-                }
+                add_to_group(&groups[gidx], idx, mac);
                 if(app->show_hidden_networks || strcmp(name, "Hidden") != 0) {
                     // Only add group item if first occurrence
                     if(groups[gidx].count == 1) {
@@ -714,6 +746,25 @@ static void deauther_setting_show_hidden_change(VariableItem* item) {
     uint8_t index = variable_item_get_current_value_index(item);
     variable_item_set_current_value_text(item, setting_show_hidden_names[index]);
     app->show_hidden_networks = (index == 1);
+}
+
+// --- Scan Duration Setup ---
+static const char* setting_scan_duration_label = "Scan Duration";
+static char* setting_scan_duration_names[] = {
+    "1s", "2s", "3s", "4s", "5s", "6s", "7s", "8s", "9s", "10s",
+    "11s", "12s", "13s", "14s", "15s", "16s", "17s", "18s", "19s", "20s"
+};
+#define SCAN_DURATION_COUNT ((SCAN_DURATION_MAX - SCAN_DURATION_MIN) / SCAN_DURATION_STEP + 1)
+static uint32_t setting_scan_duration_values[SCAN_DURATION_COUNT] = {
+    1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000,
+    11000, 12000, 13000, 14000, 15000, 16000, 17000, 18000, 19000, 20000
+};
+
+static void deauther_setting_scan_duration_change(VariableItem* item) {
+    DeautherApp* app = variable_item_get_context(item);
+    uint8_t index = variable_item_get_current_value_index(item);
+    variable_item_set_current_value_text(item, setting_scan_duration_names[index]);
+    app->scan_duration_ms = setting_scan_duration_values[index];
 }
 
 
@@ -841,6 +892,18 @@ static DeautherApp* deauther_app_alloc() {
     variable_item_set_current_value_index(hidden_item, 0); // Default to hide hidden
     variable_item_set_current_value_text(hidden_item, setting_show_hidden_names[0]);
     app->show_hidden_networks = false;
+    // Add scan duration setting
+    VariableItem* scan_duration_item = variable_item_list_add(
+        app->wifi_server_status,
+        setting_scan_duration_label,
+        SCAN_DURATION_COUNT,
+        deauther_setting_scan_duration_change,
+        app);
+    // Set default scan duration
+    uint8_t scan_duration_index = (SCAN_DURATION_DEFAULT - SCAN_DURATION_MIN) / SCAN_DURATION_STEP;
+    variable_item_set_current_value_index(scan_duration_item, scan_duration_index);
+    variable_item_set_current_value_text(scan_duration_item, setting_scan_duration_names[scan_duration_index]);
+    app->scan_duration_ms = SCAN_DURATION_DEFAULT;
 
 
     view_set_previous_callback(
@@ -931,17 +994,43 @@ static void deauther_app_free(DeautherApp* app) {
 
     uart_helper_free(app->uart_helper);
     furi_string_free(app->uart_message);
-    free(app->uart_buffer);
+    if(app->uart_buffer) {
+        free(app->uart_buffer);
+        app->uart_buffer = NULL;
+    }
+    // Free select_labels
     if(app->select_labels) {
-        for(size_t i = 0; i < app->select_capacity; ++i) free(app->select_labels[i]);
+        for(size_t i = 0; i < app->select_capacity; ++i) {
+            if(app->select_labels[i]) {
+                free(app->select_labels[i]);
+                app->select_labels[i] = NULL;
+            }
+        }
         free(app->select_labels);
+        app->select_labels = NULL;
     }
-    if(app->select_selected) free(app->select_selected);
+    // Free select_selected
+    if(app->select_selected) {
+        free(app->select_selected);
+        app->select_selected = NULL;
+    }
+    // Free select_macs
     if(app->select_macs) {
-        for(size_t i = 0; i < app->select_capacity; ++i) free(app->select_macs[i]);
+        for(size_t i = 0; i < app->select_capacity; ++i) {
+            if(app->select_macs[i]) {
+                free(app->select_macs[i]);
+                app->select_macs[i] = NULL;
+            }
+        }
         free(app->select_macs);
+        app->select_macs = NULL;
     }
-    if(app->select_bands) free(app->select_bands);
+    // Free select_bands
+    if(app->select_bands) {
+        free(app->select_bands);
+        app->select_bands = NULL;
+    }
+    app->select_capacity = 0;
     free(app);
 }
 
