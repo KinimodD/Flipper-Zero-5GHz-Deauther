@@ -526,15 +526,19 @@ static void deauther_build_select_submenu(DeautherApp* app) {
             }
             if(any_selected) {
                 if(band == 1 && groups[g].count == 1) {
-                    snprintf(label, sizeof(label), "* (5) %s", name);
+                    // snprintf(label, sizeof(label), "* (5) %s", name);
+                    snprintf(label, sizeof(label), "* (5) %.*s", (int)(sizeof(label) - 7), name);
                 } else {
-                    snprintf(label, sizeof(label), "*%s", name);
+                    // snprintf(label, sizeof(label), "*%s", name);
+                    snprintf(label, sizeof(label), "*%.*s", (int)(sizeof(label) - 2), name);
                 }
             } else {
                 if(band == 1 && groups[g].count == 1) {
-                    snprintf(label, sizeof(label), "(5) %s", name);
+                    // snprintf(label, sizeof(label), "(5) %s", name);
+                    snprintf(label, sizeof(label), "(5) %.*s", (int)(sizeof(label) - 5), name);
                 } else {
-                    snprintf(label, sizeof(label), "%s", name);
+                    // snprintf(label, sizeof(label), "%s", name);
+                    snprintf(label, sizeof(label), "%.*s", (int)(sizeof(label) - 1), name);
                 }
             }
             submenu_add_item(
