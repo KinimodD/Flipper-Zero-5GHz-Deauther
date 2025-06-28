@@ -15,7 +15,6 @@
 #include "portals/default.h"
 #include "portals/amazon.h"
 #include "portals/apple.h"
-#include "portals/facebook.h"
 
 // LEDs:
 //  Red: System usable, Web server active etc.
@@ -231,8 +230,7 @@ enum WebPortalType {
     DefaultPortal,
     WaitPortal,
     AmazonPortal,
-    ApplePortal,
-    FacebookPortal
+    ApplePortal
     // Add more as needed
 };
 
@@ -260,8 +258,6 @@ void handleRoot(WiFiClient &client, WebPortalType portalType = DefaultPortal) {
       response += PORTAL_AMAZON;
     } else if (portalType == ApplePortal) {
       response += PORTAL_APPLE;
-    } else if (portalType == FacebookPortal) {
-      response += PORTAL_FACEBOOK;
     }
     client.write(response.c_str());
 }
@@ -569,10 +565,6 @@ void read_line(){
             break;
           case '3':
             currentPortal = ApplePortal;
-            cmd_wifi(1);
-            break;
-          case '4':
-            currentPortal = FacebookPortal;
             cmd_wifi(1);
             break;
           case '0':
