@@ -68,7 +68,7 @@ https://github.com/jamisonderek/flipper-zero-tutorials/tree/main/ui/skeleton_app
 
 https://github.com/jamisonderek/flipper-zero-tutorials/tree/main/gpio/uart_demo
 
-For the DNS I used [gorebrau's](https://github.com/gorebrau) delfyRTL:
+For the DNS and the web portals, I used [gorebrau's](https://github.com/gorebrau) delfyRTL:
 https://github.com/gorebrau/delfyRTL
 
 For the serial interface I used this:
