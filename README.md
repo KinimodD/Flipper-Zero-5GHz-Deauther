@@ -43,6 +43,9 @@ Make sure to turn on 5V on GPIO on the Flipper Zero
 
 ---
 
+## Protocol
+Check [wiki](https://github.com/KinimodD/Flipper-Zero-5GHz-Deauther/wiki/Protocol)
+
 ## Screenshots
 
 Main Screen
