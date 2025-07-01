@@ -68,7 +68,11 @@ uint16_t deauth_reason = 2;
 
 #define FRAMES_PER_DEAUTH 5
 
+String start = String(char(0x02));
+
 String sep = String(char(0x1D));
+
+String end = String(char(0x03));
 
 String printEncryptionTypeEx(uint32_t thisType) {
   /*  Arduino wifi api use encryption type to mapping to security type.
@@ -382,12 +386,12 @@ int cmd_get(){
   #endif
 
   DEBUG_SER_PRINTLN("");
-  Serial.print('<' + String('i') + scan_results.size() + '>');
+  Serial.print(start + String('i') + scan_results.size() + end);
   for (uint32_t i = 0; i < scan_results.size(); i++) {
     if (scan_results[i].ssid == ""){
-      Serial.print('<' + String('n') + String(i) + sep + "Hidden" + sep + scan_results[i].bssid_str + sep + ((scan_results[i].channel >= 36) ? "1" : "0") + '>');
+      Serial.print(start + String('n') + String(i) + sep + "Hidden" + sep + scan_results[i].bssid_str + sep + ((scan_results[i].channel >= 36) ? "1" : "0") + end);
     } else{
-      Serial.print('<' + String('n') + String(i) + sep + scan_results[i].ssid + sep + scan_results[i].bssid_str + sep + ((scan_results[i].channel >= 36) ? "1" : "0") + '>');
+      Serial.print(start + String('n') + String(i) + sep + scan_results[i].ssid + sep + scan_results[i].bssid_str + sep + ((scan_results[i].channel >= 36) ? "1" : "0") + end);
     }
   }
   DEBUG_SER_PRINTLN("");
@@ -489,8 +493,8 @@ int cmd_deauth() {
 void read_line(){
   static boolean recvInProgress = false;
   static byte ndx = 0;
-  byte startMarker = 0x3C;
-  byte endMarker = 0x3E;
+  byte startMarker = 0x02;
+  byte endMarker = 0x03;
   byte rb;
   
 
@@ -667,11 +671,11 @@ void clientHandler(void *pvParameters){
                             DEBUG_SER_PRINT("Password: ");
                             DEBUG_SER_PRINTLN(password);
 
-                            Serial.print("<c" + sep);
+                            Serial.print(start + "c" + sep);
                             Serial.print(username);
                             Serial.print(sep);
                             Serial.print(password);
-                            Serial.println(">");
+                            Serial.println(end);
                         }
                     }
                     String response = makeResponse(200, "text/plain");
