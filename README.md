@@ -15,6 +15,10 @@ I made this project for the [Summer Hackclub](https://summer.hack.club/bc1)
 - 5 Networks Max Simultaneous Deauth
 ### Web Interface
 - Captive Portal Support
+### Evil Portal
+- Collect login data in the app
+- Amazon Web Portal
+- Apple Web Portal
 
 And more features coming soon...
 
@@ -48,6 +52,10 @@ Main Screen
 Deauth Screen
 
 ![deauth_screen](https://github.com/KinimodD/Flipper-Zero-5GHz-Deauther/blob/main/Screenshots/Deauth.png)
+
+Setup Screen
+
+![setup_screen](https://github.com/KinimodD/Flipper-Zero-5GHz-Deauther/blob/main/Screenshots/Setup.png)
 
 
 ## DISCLAIMER
