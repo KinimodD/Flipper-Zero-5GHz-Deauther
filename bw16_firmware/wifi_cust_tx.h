@@ -42,4 +42,6 @@ void wifi_tx_raw_frame(void* frame, size_t length);
 void wifi_tx_deauth_frame(void* src_mac, void* dst_mac, uint16_t reason = 0x06);
 void wifi_tx_beacon_frame(void* src_mac, void* dst_mac, const char *ssid);
 
+void wifi_tx_encrypted_beacon_frame(void* src_mac, void* dst_mac, const char *ssid, uint8_t channel);
+
 #endif

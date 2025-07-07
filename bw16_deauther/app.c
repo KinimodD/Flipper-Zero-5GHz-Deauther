@@ -27,11 +27,12 @@
 // If you set it to BACKLIGHT_ON, the backlight will be always on.
 #define BACKLIGHT_AUTO 1
 
-// Our application menu has 3 items.
+// Our application menu has 4 items now.
 typedef enum {
     DeautherSubmenuIndexSetup,
     DeautherSubmenuIndexDeauth,
-    DeautherSubmenuIndexPortal, // Add Evil Portal index
+    DeautherSubmenuIndexBeacon,  // Add Beacon index
+    DeautherSubmenuIndexPortal,
     DeautherSubmenuIndexAbout,
 } DeautherSubmenuIndex;
 
@@ -43,6 +44,12 @@ typedef enum {
     DeautherSubmenuDeauthAttack,
 } DeautherSubmenuDeauth;
 
+typedef enum {
+    DeautherSubmenuBeaconRandom,
+    DeautherSubmenuBeaconRickRoll,
+    DeautherSubmenuBeaconCustom,
+} DeautherSubmenuBeacon;
+
 
 // Each view is a screen we show the user.
 typedef enum {
@@ -50,6 +57,7 @@ typedef enum {
     DeautherViewTextInput, // Input for configuring text settings
     DeautherViewSetup, // The configuration screen
     DeautherViewDeauth, // The deauth screen
+    DeautherViewBeacon, // The beacon screen
     DeautherViewAbout, // The about screen with directions, link to social channel, etc.
     DeautherViewScan,
     DeautherViewSelect,
@@ -76,6 +84,7 @@ typedef struct {
     VariableItemList* wifi_server_status; // The configuration screen
 
     Submenu* deauth_submenu; // The deauth screen
+    Submenu* beacon_submenu; // The beacon screen
 
     Widget* widget_about; // The about screen
 
@@ -163,6 +172,39 @@ static uint32_t deauther_navigation_select_callback(void* _context) {
     return DeautherViewSelect;
 }
 
+/**
+ * @brief      Navigation callback for text input view.
+ * @details    This function is called when user presses back button in text input.
+ * @param      context  The context - unused
+ * @return     next view id
+*/
+static uint32_t deauther_navigation_text_input_callback(void* context) {
+    UNUSED(context);
+    return DeautherViewBeacon;
+}
+
+/**
+ * @brief      Handle text input result for custom beacon.
+ * @details    This function is called when user submits text input.
+ * @param      context  The context - DeautherApp object.
+*/
+static void deauther_text_input_callback(void* context) {
+    DeautherApp* app = (DeautherApp*)context;
+    
+    // Send custom beacon command with the entered text
+    // Format: \x02bc<text>\x03
+    uart_helper_send(app->uart_helper, "\x02", 1);
+    uart_helper_send(app->uart_helper, "b", 1);
+    uart_helper_send(app->uart_helper, "c", 1);
+    uart_helper_send(app->uart_helper, app->temp_buffer, strlen(app->temp_buffer));
+    uart_helper_send(app->uart_helper, "\x03", 1);
+    
+    FURI_LOG_I(TAG, "custom beacon: %s", app->temp_buffer);
+    
+    // Return to beacon submenu
+    view_dispatcher_switch_to_view(app->view_dispatcher, DeautherViewBeacon);
+}
+
 // Helper: find group index by name
 static int find_group(NetworkGroup* groups, size_t group_count, const char* name) {
     for(size_t i = 0; i < group_count; ++i) {
@@ -211,6 +253,9 @@ static void deauther_submenu_callback(void* context, uint32_t index) {
         break;
     case DeautherSubmenuIndexDeauth:
         view_dispatcher_switch_to_view(app->view_dispatcher, DeautherViewDeauth);
+        break;
+    case DeautherSubmenuIndexBeacon:
+        view_dispatcher_switch_to_view(app->view_dispatcher, DeautherViewBeacon);
         break;
     case DeautherSubmenuIndexPortal:
         // Clear portal submenu and request current portal list
@@ -485,6 +530,51 @@ static void deauth_submenu_callback(void* context, uint32_t index) {
         break;
     }
 }
+
+
+static void beacon_submenu_callback(void* context, uint32_t index){
+    DeautherApp* app = (DeautherApp*)context;
+    switch(index) {
+        case DeautherSubmenuBeaconRandom: {
+            // Send random beacon command
+            //uart_helper_send(app->uart_helper, "\x02br\x03", 4);
+            uart_helper_send(app->uart_helper, "\x02", 1);
+            uart_helper_send(app->uart_helper, "b", 1);
+            uart_helper_send(app->uart_helper, "r", 1);
+            uart_helper_send(app->uart_helper, "\x03", 1);
+            FURI_LOG_I(TAG, "beacon random");
+            break;
+        }
+        case DeautherSubmenuBeaconRickRoll: {
+            // Send Rick Roll beacon command
+            //uart_helper_send(app->uart_helper, "\x02bk\x03", 4);
+            uart_helper_send(app->uart_helper, "\x02", 1);
+            uart_helper_send(app->uart_helper, "b", 1);
+            uart_helper_send(app->uart_helper, "k", 1);
+            uart_helper_send(app->uart_helper, "\x03", 1);
+            FURI_LOG_I(TAG, "beacon rick roll");
+            break;
+        }
+        case DeautherSubmenuBeaconCustom: {
+            // Set up text input for custom beacon
+            text_input_reset(app->text_input);
+            text_input_set_header_text(app->text_input, "Enter custom beacon text");
+            text_input_set_result_callback(
+                app->text_input,
+                deauther_text_input_callback,
+                app,
+                app->temp_buffer,
+                app->temp_buffer_size,
+                true); // Clear default text
+            
+            // Switch to text input view
+            view_dispatcher_switch_to_view(app->view_dispatcher, DeautherViewTextInput);
+            FURI_LOG_I(TAG, "beacon custom - text input");
+            break;
+        }
+    }
+}
+
 
 // Helper to build and show the select submenu after all networks are received
 static void deauther_build_select_submenu(DeautherApp* app) {
@@ -859,7 +949,17 @@ static void deauther_setting_portal_change(VariableItem* item) {
     DeautherApp* app = variable_item_get_context(item);
     uint8_t index = variable_item_get_current_value_index(item);
     variable_item_set_current_value_text(item, setting_portal_names[index]);
-    app->portal_index = index + 1; // 1=Default, 2=Amazon, 3=Apple
+    
+    uint8_t new_portal_index = index + 1; // 1=Default, 2=Amazon, 3=Apple
+    
+    // If wifi portal is on and portal index is changing, send portal change command
+    if(app->last_wifi_status == 1 && app->portal_index != new_portal_index) {
+        char uart_cmd[8];
+        snprintf(uart_cmd, sizeof(uart_cmd), "\x02p%u\x03", new_portal_index);
+        uart_helper_send(app->uart_helper, uart_cmd, strlen(uart_cmd));
+    }
+    
+    app->portal_index = new_portal_index;
 }
 
 /**
@@ -885,7 +985,9 @@ static DeautherApp* deauther_app_alloc() {
     submenu_add_item(
         app->submenu, "Deauth", DeautherSubmenuIndexDeauth, deauther_submenu_callback, app);
     submenu_add_item(
-        app->submenu, "Evil Portal Output", DeautherSubmenuIndexPortal, deauther_submenu_callback, app); // Add Evil Portal
+        app->submenu, "Beacon", DeautherSubmenuIndexBeacon, deauther_submenu_callback, app);
+    submenu_add_item(
+        app->submenu, "Evil Portal Output", DeautherSubmenuIndexPortal, deauther_submenu_callback, app);
     submenu_add_item(
         app->submenu, "About", DeautherSubmenuIndexAbout, deauther_submenu_callback, app);
     view_set_previous_callback(submenu_get_view(app->submenu), deauther_navigation_exit_callback);
@@ -909,6 +1011,20 @@ static DeautherApp* deauther_app_alloc() {
         app->view_dispatcher, DeautherViewDeauth, submenu_get_view(app->deauth_submenu));
     /////////////////
 
+    /////////////////// beacon screen
+    app->beacon_submenu = submenu_alloc();
+    submenu_add_item(
+        app->beacon_submenu, "Random", DeautherSubmenuBeaconRandom, beacon_submenu_callback, app);
+    submenu_add_item(
+        app->beacon_submenu, "Rick Roll", DeautherSubmenuBeaconRickRoll, beacon_submenu_callback, app);
+    /*
+    submenu_add_item(
+        app->beacon_submenu, "Custom", DeautherSubmenuBeaconCustom, beacon_submenu_callback, app);
+    */
+    view_set_previous_callback(submenu_get_view(app->beacon_submenu), deauther_navigation_submenu_callback);
+    view_dispatcher_add_view(
+        app->view_dispatcher, DeautherViewBeacon, submenu_get_view(app->beacon_submenu));
+    /////////////////
 
     // Scan screen
     app->widget_scan = widget_alloc();
@@ -948,11 +1064,9 @@ static DeautherApp* deauther_app_alloc() {
         submenu_get_view(app->submenu_portal), deauther_navigation_submenu_callback);
     view_dispatcher_add_view(
         app->view_dispatcher, DeautherViewPortal, submenu_get_view(app->submenu_portal));
-    // ...existing code...
-
-
     //Text input screen
     app->text_input = text_input_alloc();
+    view_set_previous_callback(text_input_get_view(app->text_input), deauther_navigation_text_input_callback);
     view_dispatcher_add_view(
         app->view_dispatcher, DeautherViewTextInput, text_input_get_view(app->text_input));
     app->temp_buffer_size = 32;
@@ -1096,6 +1210,11 @@ static void deauther_app_free(DeautherApp* app) {
     if(app->view_dispatcher && app->widget_attack) {
         view_dispatcher_remove_view(app->view_dispatcher, DeautherViewAttack);
         widget_free(app->widget_attack);
+    }
+
+    if(app->view_dispatcher && app->beacon_submenu) {
+        view_dispatcher_remove_view(app->view_dispatcher, DeautherViewBeacon);
+        submenu_free(app->beacon_submenu);
     }
 
     if(app->view_dispatcher && app->deauth_submenu) {
