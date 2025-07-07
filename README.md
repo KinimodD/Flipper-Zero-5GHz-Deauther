@@ -19,6 +19,9 @@ I made this project for the [Summer Hackclub](https://summer.hack.club/bc1)
 - Collect login data in the app
 - Amazon Web Portal
 - Apple Web Portal
+### Beacon
+- Random SSID Spam
+- Rick Roll SSID's
 
 And more features coming soon...
 
