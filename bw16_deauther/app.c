@@ -45,10 +45,17 @@ typedef enum {
 } DeautherSubmenuDeauth;
 
 typedef enum {
-    DeautherSubmenuBeaconRandom,
-    DeautherSubmenuBeaconRickRoll,
-    DeautherSubmenuBeaconCustom,
+    DeautherSubmenuBeaconSetup,
+    DeautherSubmenuBeaconModeMenu,
+    DeautherSubmenuBeaconAttack,
 } DeautherSubmenuBeacon;
+
+
+typedef enum {
+    DeautherSubmenuBeaconModeRandom,
+    DeautherSubmenuBeaconModeRickRoll,
+    DeautherSubmenuBeaconModeCustom,
+} DeautherSubmenuBeaconModeType;
 
 
 // Each view is a screen we show the user.
@@ -64,6 +71,8 @@ typedef enum {
     DeautherViewAttack,
     DeautherViewNetwork, // Grouped network submenu
     DeautherViewPortal,  // Add Evil Portal submenu view
+    DeautherViewBeaconMode, // Beacon mode submenu
+    DeautherViewBeaconSetup, // The configuration screen
 } DeautherView;
 
 
@@ -81,10 +90,17 @@ typedef struct {
     NotificationApp* notifications; // Used for controlling the backlight
     Submenu* submenu; // The application menu
     TextInput* text_input; // The text input screen
-    VariableItemList* wifi_server_status; // The configuration screen
+    VariableItemList* deauther_setup; // The configuration screen
 
     Submenu* deauth_submenu; // The deauth screen
+
     Submenu* beacon_submenu; // The beacon screen
+
+    VariableItemList* beacon_setup; // The beacon configuration screen
+    Submenu* beacon_mode_submenu; // The beacon mode screen
+    Widget* widget_beacon_attack; // The attack item
+
+
 
     Widget* widget_about; // The about screen
 
@@ -119,6 +135,10 @@ typedef struct {
 
     uint8_t portal_index; // Store selected portal index (1=Default, 2=Amazon, 3=Apple)
     uint32_t portal_submenu_index; // Index for portal submenu items
+    
+    // Beacon mode selection tracking
+    uint8_t selected_beacon_mode; // 0=none, 1=random, 2=rickroll, 3=custom
+    char custom_beacon_text[64]; // Store custom beacon text
 } DeautherApp;
 
 typedef struct {
@@ -137,6 +157,7 @@ static NetworkGroup* current_network_group = NULL;
 
 // Global variable to track attack state
 static bool g_attack_active = false;
+static bool g_beacon_attack_active = false;
 
 /**
  * @brief      Callback for exiting the application.
@@ -172,15 +193,29 @@ static uint32_t deauther_navigation_select_callback(void* _context) {
     return DeautherViewSelect;
 }
 
-/**
- * @brief      Navigation callback for text input view.
- * @details    This function is called when user presses back button in text input.
- * @param      context  The context - unused
- * @return     next view id
-*/
-static uint32_t deauther_navigation_text_input_callback(void* context) {
+
+static uint32_t deauther_navigation_beacon_callback(void* context) {
     UNUSED(context);
     return DeautherViewBeacon;
+}
+
+// Helper to update the Beacon Attack label with the selected mode
+static void deauther_update_beacon_attack_label(DeautherApp* app) {
+    if(!app->beacon_submenu) return;
+    
+    char label[32];
+    if(g_beacon_attack_active) {
+        snprintf(label, sizeof(label), "Stop Attack");
+    } else if(app->selected_beacon_mode == 1) {
+        snprintf(label, sizeof(label), "Attack - Random");
+    } else if(app->selected_beacon_mode == 2) {
+        snprintf(label, sizeof(label), "Attack - Rick Roll");
+    } else if(app->selected_beacon_mode == 3) {
+        snprintf(label, sizeof(label), "Attack - Custom");
+    } else {
+        snprintf(label, sizeof(label), "Attack");
+    }
+    submenu_change_item_label(app->beacon_submenu, DeautherSubmenuBeaconAttack, label);
 }
 
 /**
@@ -191,18 +226,23 @@ static uint32_t deauther_navigation_text_input_callback(void* context) {
 static void deauther_text_input_callback(void* context) {
     DeautherApp* app = (DeautherApp*)context;
     
-    // Send custom beacon command with the entered text
-    // Format: \x02bc<text>\x03
-    uart_helper_send(app->uart_helper, "\x02", 1);
-    uart_helper_send(app->uart_helper, "b", 1);
-    uart_helper_send(app->uart_helper, "c", 1);
-    uart_helper_send(app->uart_helper, app->temp_buffer, strlen(app->temp_buffer));
-    uart_helper_send(app->uart_helper, "\x03", 1);
+    // Store the custom text and mark as selected
+    strncpy(app->custom_beacon_text, app->temp_buffer, sizeof(app->custom_beacon_text) - 1);
+    app->custom_beacon_text[sizeof(app->custom_beacon_text) - 1] = '\0';
+    app->selected_beacon_mode = 3;
     
-    FURI_LOG_I(TAG, "custom beacon: %s", app->temp_buffer);
+    // Clear previous selection markers
+    submenu_change_item_label(app->beacon_mode_submenu, DeautherSubmenuBeaconModeRandom, "Random");
+    submenu_change_item_label(app->beacon_mode_submenu, DeautherSubmenuBeaconModeRickRoll, "Rick Roll");
+    submenu_change_item_label(app->beacon_mode_submenu, DeautherSubmenuBeaconModeCustom, "*Custom");
     
-    // Return to beacon submenu
-    view_dispatcher_switch_to_view(app->view_dispatcher, DeautherViewBeacon);
+    // Update beacon attack label
+    deauther_update_beacon_attack_label(app);
+    
+    FURI_LOG_I(TAG, "custom beacon text stored: %s", app->custom_beacon_text);
+    
+    // Return to beacon mode submenu
+    view_dispatcher_switch_to_view(app->view_dispatcher, DeautherViewBeaconMode);
 }
 
 // Helper: find group index by name
@@ -481,7 +521,11 @@ static void deauth_submenu_callback(void* context, uint32_t index) {
         if(app->scan_duration_ms > 0) {
             snprintf(uart_cmd, sizeof(uart_cmd), "\x02s%lu\x03", (unsigned long)app->scan_duration_ms);
         } else {
-            snprintf(uart_cmd, sizeof(uart_cmd), "\x02s\x03");
+            uart_helper_send(app->uart_helper, "\x02", 1);
+            uart_helper_send(app->uart_helper, "s", 1);
+            uart_helper_send(app->uart_helper, "\x03", 1);
+            FURI_LOG_I(TAG, "scan");
+            break;
         }
         size_t uart_cmd_len = strlen(uart_cmd);
         uart_helper_send(app->uart_helper, uart_cmd, uart_cmd_len);
@@ -493,7 +537,9 @@ static void deauth_submenu_callback(void* context, uint32_t index) {
         submenu_reset(app->submenu_select);
         app->select_index = 0;
         // Send a message via UART when select is selected using hex delimiters
-        uart_helper_send(app->uart_helper, "\x02g\x03", 3);
+        uart_helper_send(app->uart_helper, "\x02", 1);
+        uart_helper_send(app->uart_helper, "g", 1);
+        uart_helper_send(app->uart_helper, "\x03", 1);
         // Do not switch to view or build submenu yet; wait for all networks to arrive
         app->select_ready = false;
         FURI_LOG_I(TAG, "select (waiting for networks)");
@@ -507,9 +553,12 @@ static void deauth_submenu_callback(void* context, uint32_t index) {
             if(app->select_selected && app->select_labels) {
                 for(size_t i = 0; i < app->select_capacity; ++i) {
                     if(app->select_selected[i]) {
-                        char uart_cmd[17];
-                        snprintf(uart_cmd, sizeof(uart_cmd), "\x02d%02zu-00\x03", i);
-                        uart_helper_send(app->uart_helper, uart_cmd, strlen(uart_cmd));
+                        uart_helper_send(app->uart_helper, "\x02", 1);
+                        uart_helper_send(app->uart_helper, "d", 1);
+                        char index_str[16];
+                        snprintf(index_str, sizeof(index_str), "%02zu-00", i);
+                        uart_helper_send(app->uart_helper, index_str, strlen(index_str));
+                        uart_helper_send(app->uart_helper, "\x03", 1);
                         furi_delay_ms(1000);
                     }
                 }
@@ -517,7 +566,10 @@ static void deauth_submenu_callback(void* context, uint32_t index) {
             FURI_LOG_I(TAG, "attack started");
         } else if (g_attack_active) {
             // Stop attack
-            uart_helper_send(app->uart_helper, "\x02ds\x03", 4);
+            uart_helper_send(app->uart_helper, "\x02", 1);
+            uart_helper_send(app->uart_helper, "d", 1);
+            uart_helper_send(app->uart_helper, "s", 1);
+            uart_helper_send(app->uart_helper, "\x03", 1);
             g_attack_active = false;
             deauther_update_attack_label(app);
             FURI_LOG_I(TAG, "attack stopped");
@@ -532,49 +584,135 @@ static void deauth_submenu_callback(void* context, uint32_t index) {
 }
 
 
-static void beacon_submenu_callback(void* context, uint32_t index){
+static void beacon_mode_submenu_callback(void* context, uint32_t index){
     DeautherApp* app = (DeautherApp*)context;
+    
     switch(index) {
-        case DeautherSubmenuBeaconRandom: {
-            // Send random beacon command
-            //uart_helper_send(app->uart_helper, "\x02br\x03", 4);
-            uart_helper_send(app->uart_helper, "\x02", 1);
-            uart_helper_send(app->uart_helper, "b", 1);
-            uart_helper_send(app->uart_helper, "r", 1);
-            uart_helper_send(app->uart_helper, "\x03", 1);
-            FURI_LOG_I(TAG, "beacon random");
+        case DeautherSubmenuBeaconModeRandom: {
+            if(app->selected_beacon_mode == 1) {
+                // Deselect if already selected
+                app->selected_beacon_mode = 0;
+                submenu_change_item_label(app->beacon_mode_submenu, DeautherSubmenuBeaconModeRandom, "Random");
+                FURI_LOG_I(TAG, "beacon mode: random deselected");
+            } else {
+                // Clear previous selection markers
+                submenu_change_item_label(app->beacon_mode_submenu, DeautherSubmenuBeaconModeRandom, "Random");
+                submenu_change_item_label(app->beacon_mode_submenu, DeautherSubmenuBeaconModeRickRoll, "Rick Roll");
+                submenu_change_item_label(app->beacon_mode_submenu, DeautherSubmenuBeaconModeCustom, "Custom");
+                
+                // Select random mode
+                submenu_change_item_label(app->beacon_mode_submenu, DeautherSubmenuBeaconModeRandom, "*Random");
+                app->selected_beacon_mode = 1;
+                FURI_LOG_I(TAG, "beacon mode: random selected");
+            }
+            deauther_update_beacon_attack_label(app);
             break;
         }
-        case DeautherSubmenuBeaconRickRoll: {
-            // Send Rick Roll beacon command
-            //uart_helper_send(app->uart_helper, "\x02bk\x03", 4);
-            uart_helper_send(app->uart_helper, "\x02", 1);
-            uart_helper_send(app->uart_helper, "b", 1);
-            uart_helper_send(app->uart_helper, "k", 1);
-            uart_helper_send(app->uart_helper, "\x03", 1);
-            FURI_LOG_I(TAG, "beacon rick roll");
+        case DeautherSubmenuBeaconModeRickRoll: {
+            if(app->selected_beacon_mode == 2) {
+                // Deselect if already selected
+                app->selected_beacon_mode = 0;
+                submenu_change_item_label(app->beacon_mode_submenu, DeautherSubmenuBeaconModeRickRoll, "Rick Roll");
+                FURI_LOG_I(TAG, "beacon mode: rick roll deselected");
+            } else {
+                // Clear previous selection markers
+                submenu_change_item_label(app->beacon_mode_submenu, DeautherSubmenuBeaconModeRandom, "Random");
+                submenu_change_item_label(app->beacon_mode_submenu, DeautherSubmenuBeaconModeRickRoll, "Rick Roll");
+                submenu_change_item_label(app->beacon_mode_submenu, DeautherSubmenuBeaconModeCustom, "Custom");
+                
+                // Select rick roll mode
+                submenu_change_item_label(app->beacon_mode_submenu, DeautherSubmenuBeaconModeRickRoll, "*Rick Roll");
+                app->selected_beacon_mode = 2;
+                FURI_LOG_I(TAG, "beacon mode: rick roll selected");
+            }
+            deauther_update_beacon_attack_label(app);
             break;
         }
-        case DeautherSubmenuBeaconCustom: {
-            // Set up text input for custom beacon
-            text_input_reset(app->text_input);
-            text_input_set_header_text(app->text_input, "Enter custom beacon text");
-            text_input_set_result_callback(
-                app->text_input,
-                deauther_text_input_callback,
-                app,
-                app->temp_buffer,
-                app->temp_buffer_size,
-                true); // Clear default text
-            
-            // Switch to text input view
-            view_dispatcher_switch_to_view(app->view_dispatcher, DeautherViewTextInput);
-            FURI_LOG_I(TAG, "beacon custom - text input");
+        case DeautherSubmenuBeaconModeCustom: {
+            if(app->selected_beacon_mode == 3) {
+                // Deselect if already selected
+                app->selected_beacon_mode = 0;
+                submenu_change_item_label(app->beacon_mode_submenu, DeautherSubmenuBeaconModeCustom, "Custom");
+                deauther_update_beacon_attack_label(app);
+                FURI_LOG_I(TAG, "beacon mode: custom deselected");
+            } else {
+                // Set up text input for custom beacon
+                text_input_reset(app->text_input);
+                text_input_set_header_text(app->text_input, "Enter custom beacon text");
+                text_input_set_result_callback(
+                    app->text_input,
+                    deauther_text_input_callback,
+                    app,
+                    app->temp_buffer,
+                    app->temp_buffer_size,
+                    true); // Clear default text
+                
+                // Switch to text input view
+                view_dispatcher_switch_to_view(app->view_dispatcher, DeautherViewTextInput);
+                FURI_LOG_I(TAG, "beacon custom - text input");
+            }
             break;
         }
     }
 }
 
+static void beacon_submenu_callback(void* context, uint32_t index){
+    DeautherApp* app = (DeautherApp*)context;
+    switch(index){
+        case DeautherSubmenuBeaconSetup: {
+            view_dispatcher_switch_to_view(app->view_dispatcher, DeautherViewBeaconSetup);
+            break;
+        }
+        case DeautherSubmenuBeaconModeMenu: {
+            view_dispatcher_switch_to_view(app->view_dispatcher, DeautherViewBeaconMode);
+            break;
+        }
+        case DeautherSubmenuBeaconAttack: {
+            if(!g_beacon_attack_active) {
+                // Start beacon attack
+                if(app->selected_beacon_mode == 1) {
+                    // Random mode
+                    uart_helper_send(app->uart_helper, "\x02", 1);
+                    uart_helper_send(app->uart_helper, "b", 1);
+                    uart_helper_send(app->uart_helper, "r", 1);
+                    uart_helper_send(app->uart_helper, "\x03", 1);
+                    FURI_LOG_I(TAG, "beacon attack: random started");
+                } else if(app->selected_beacon_mode == 2) {
+                    // Rick Roll mode
+                    uart_helper_send(app->uart_helper, "\x02", 1);
+                    uart_helper_send(app->uart_helper, "b", 1);
+                    uart_helper_send(app->uart_helper, "k", 1);
+                    uart_helper_send(app->uart_helper, "\x03", 1);
+                    FURI_LOG_I(TAG, "beacon attack: rick roll started");
+                } else if(app->selected_beacon_mode == 3) {
+                    // Custom mode
+                    uart_helper_send(app->uart_helper, "\x02", 1);
+                    uart_helper_send(app->uart_helper, "b", 1);
+                    uart_helper_send(app->uart_helper, "c", 1);
+                    uart_helper_send(app->uart_helper, app->custom_beacon_text, strlen(app->custom_beacon_text));
+                    uart_helper_send(app->uart_helper, "\x03", 1);
+                    FURI_LOG_I(TAG, "beacon attack: custom (%s) started", app->custom_beacon_text);
+                } else {
+                    // No mode selected, do nothing
+                    FURI_LOG_W(TAG, "beacon attack: no mode selected");
+                    break;
+                }
+                g_beacon_attack_active = true;
+                deauther_update_beacon_attack_label(app);
+            } else {
+                // Stop beacon attack
+                uart_helper_send(app->uart_helper, "\x02", 1);
+                uart_helper_send(app->uart_helper, "b", 1);
+                uart_helper_send(app->uart_helper, "s", 1);
+                uart_helper_send(app->uart_helper, "\x03", 1);
+                g_beacon_attack_active = false;
+                deauther_update_beacon_attack_label(app);
+                FURI_LOG_I(TAG, "beacon attack: stopped");
+            }
+            break;
+        }
+    }
+}
 
 // Helper to build and show the select submenu after all networks are received
 static void deauther_build_select_submenu(DeautherApp* app) {
@@ -1014,17 +1152,48 @@ static DeautherApp* deauther_app_alloc() {
     /////////////////// beacon screen
     app->beacon_submenu = submenu_alloc();
     submenu_add_item(
-        app->beacon_submenu, "Random", DeautherSubmenuBeaconRandom, beacon_submenu_callback, app);
+        app->beacon_submenu, "Setup", DeautherSubmenuBeaconSetup, beacon_submenu_callback, app);
     submenu_add_item(
-        app->beacon_submenu, "Rick Roll", DeautherSubmenuBeaconRickRoll, beacon_submenu_callback, app);
-    /*
+        app->beacon_submenu, "Mode", DeautherSubmenuBeaconModeMenu, beacon_submenu_callback, app);
     submenu_add_item(
-        app->beacon_submenu, "Custom", DeautherSubmenuBeaconCustom, beacon_submenu_callback, app);
-    */
+        app->beacon_submenu, "Attack", DeautherSubmenuBeaconAttack, beacon_submenu_callback, app);
+
     view_set_previous_callback(submenu_get_view(app->beacon_submenu), deauther_navigation_submenu_callback);
     view_dispatcher_add_view(
         app->view_dispatcher, DeautherViewBeacon, submenu_get_view(app->beacon_submenu));
     /////////////////
+
+
+    /////////////////// beacon mode screen
+    app->beacon_mode_submenu = submenu_alloc();
+
+    submenu_add_item(
+        app->beacon_mode_submenu, "Random", DeautherSubmenuBeaconModeRandom, beacon_mode_submenu_callback, app);
+    submenu_add_item(
+        app->beacon_mode_submenu, "Rick Roll", DeautherSubmenuBeaconModeRickRoll, beacon_mode_submenu_callback, app);
+    /*
+    submenu_add_item(
+        app->beacon_mode_submenu, "Custom", DeautherSubmenuBeaconModeCustom, beacon_mode_submenu_callback, app);
+    */
+    view_set_previous_callback(submenu_get_view(app->beacon_mode_submenu), deauther_navigation_beacon_callback);
+    view_dispatcher_add_view(
+        app->view_dispatcher, DeautherViewBeaconMode, submenu_get_view(app->beacon_mode_submenu));
+    /////////////////
+
+
+
+    // Beacon setup screen
+    app->beacon_setup = variable_item_list_alloc();
+    variable_item_list_reset(app->beacon_setup);
+    
+
+    view_set_previous_callback(
+        variable_item_list_get_view(app->beacon_setup),
+        deauther_navigation_beacon_callback);
+    view_dispatcher_add_view(
+        app->view_dispatcher,
+        DeautherViewBeaconSetup,
+        variable_item_list_get_view(app->beacon_setup));
 
     // Scan screen
     app->widget_scan = widget_alloc();
@@ -1066,17 +1235,17 @@ static DeautherApp* deauther_app_alloc() {
         app->view_dispatcher, DeautherViewPortal, submenu_get_view(app->submenu_portal));
     //Text input screen
     app->text_input = text_input_alloc();
-    view_set_previous_callback(text_input_get_view(app->text_input), deauther_navigation_text_input_callback);
+    view_set_previous_callback(text_input_get_view(app->text_input), deauther_navigation_beacon_callback);
     view_dispatcher_add_view(
         app->view_dispatcher, DeautherViewTextInput, text_input_get_view(app->text_input));
     app->temp_buffer_size = 32;
     app->temp_buffer = (char*)malloc(app->temp_buffer_size);
 
     // Setup screen
-    app->wifi_server_status = variable_item_list_alloc();
-    variable_item_list_reset(app->wifi_server_status);
+    app->deauther_setup = variable_item_list_alloc();
+    variable_item_list_reset(app->deauther_setup);
     VariableItem* item = variable_item_list_add(
-        app->wifi_server_status,
+        app->deauther_setup,
         setting_1_config_label,
         COUNT_OF(setting_1_values),
         deauther_setting_1_change,
@@ -1086,7 +1255,7 @@ static DeautherApp* deauther_app_alloc() {
     variable_item_set_current_value_text(item, setting_1_names[wifi_status_index]);
     // Add Portal variable item
     VariableItem* portal_item = variable_item_list_add(
-        app->wifi_server_status,
+        app->deauther_setup,
         setting_portal_label,
         PORTAL_COUNT,
         deauther_setting_portal_change,
@@ -1097,7 +1266,7 @@ static DeautherApp* deauther_app_alloc() {
 
     // Add hidden network toggle
     VariableItem* hidden_item = variable_item_list_add(
-        app->wifi_server_status,
+        app->deauther_setup,
         setting_show_hidden_label,
         2,
         deauther_setting_show_hidden_change,
@@ -1107,7 +1276,7 @@ static DeautherApp* deauther_app_alloc() {
     app->show_hidden_networks = false;
     // Add scan duration setting
     VariableItem* scan_duration_item = variable_item_list_add(
-        app->wifi_server_status,
+        app->deauther_setup,
         setting_scan_duration_label,
         SCAN_DURATION_COUNT,
         deauther_setting_scan_duration_change,
@@ -1120,12 +1289,12 @@ static DeautherApp* deauther_app_alloc() {
 
 
     view_set_previous_callback(
-        variable_item_list_get_view(app->wifi_server_status),
+        variable_item_list_get_view(app->deauther_setup),
         deauther_navigation_submenu_callback);
     view_dispatcher_add_view(
         app->view_dispatcher,
         DeautherViewSetup,
-        variable_item_list_get_view(app->wifi_server_status));
+        variable_item_list_get_view(app->deauther_setup));
 
     // About screen
     app->widget_about = widget_alloc();
@@ -1155,6 +1324,9 @@ static DeautherApp* deauther_app_alloc() {
     app->last_wifi_status = 0; // Default to Off
     app->select_index = 0; // Initialize select submenu index
     app->portal_submenu_index = 0; // Initialize portal submenu index
+    app->selected_beacon_mode = 0; // No beacon mode selected initially
+    memset(app->custom_beacon_text, 0, sizeof(app->custom_beacon_text)); // Clear custom text
+    
     // UART buffer for select screen
     app->uart_buffer = (char*)malloc(UART_BUFFER_SIZE);
     app->uart_buffer_len = 0;
@@ -1212,6 +1384,16 @@ static void deauther_app_free(DeautherApp* app) {
         widget_free(app->widget_attack);
     }
 
+    if(app->view_dispatcher && app->beacon_mode_submenu) {
+        view_dispatcher_remove_view(app->view_dispatcher, DeautherViewBeaconMode);
+        submenu_free(app->beacon_mode_submenu);
+    }
+
+    if(app->view_dispatcher && app->beacon_setup) {
+        view_dispatcher_remove_view(app->view_dispatcher, DeautherViewBeaconSetup);
+        variable_item_list_free(app->beacon_setup);
+    }
+
     if(app->view_dispatcher && app->beacon_submenu) {
         view_dispatcher_remove_view(app->view_dispatcher, DeautherViewBeacon);
         submenu_free(app->beacon_submenu);
@@ -1222,9 +1404,9 @@ static void deauther_app_free(DeautherApp* app) {
         submenu_free(app->deauth_submenu);
     }
 
-    if(app->view_dispatcher && app->wifi_server_status) {
+    if(app->view_dispatcher && app->deauther_setup) {
         view_dispatcher_remove_view(app->view_dispatcher, DeautherViewSetup);
-        variable_item_list_free(app->wifi_server_status);
+        variable_item_list_free(app->deauther_setup);
     }
 
     if(app->view_dispatcher && app->submenu) {
